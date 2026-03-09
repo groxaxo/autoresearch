@@ -86,30 +86,13 @@ class TrainingPreset:
     compile_model: bool = True
 
 
-DEFAULT_PRESET = TrainingPreset()
-PRESETS = {
-    "default": DEFAULT_PRESET,
-    "rtx3090": replace(
-        DEFAULT_PRESET,
-        name="rtx3090",
-        depth=10,
-        device_batch_size=24,
-        total_batch_size=2**18,
-        window_pattern="L",
-        activation_checkpointing=True,
-        compile_model=False,
-    ),
-    "rtx3090x2": replace(
-        DEFAULT_PRESET,
-        name="rtx3090x2",
-        depth=12,
-        device_batch_size=24,
-        total_batch_size=2**19,
-        window_pattern="L",
-        activation_checkpointing=True,
-        compile_model=False,
-    ),
-}
+REFERENCE_PRESET = TrainingPreset()
+RTX3090_MIN_DEPTH = 10
+RTX3090X2_MIN_DEPTH = 12
+RTX3090_MAX_DEVICE_BATCH_SIZE = 24
+RTX3090_TOTAL_BATCH_SIZE = 2**18
+RTX3090X2_TOTAL_BATCH_SIZE = 2**19
+WARMUP_STEPS = 10
 
 
 def env_flag(name, default=False):
@@ -141,6 +124,7 @@ def init_distributed():
 
 
 def resolve_training_preset(dist_cfg):
+    presets = build_training_presets()
     profile = os.environ.get("AUTORESEARCH_PROFILE", "default").lower()
     profile = {
         "3090": "rtx3090",
@@ -149,9 +133,9 @@ def resolve_training_preset(dist_cfg):
     }.get(profile, profile)
     if profile == "rtx3090" and dist_cfg.world_size > 1:
         profile = "rtx3090x2"
-    if profile not in PRESETS:
-        raise ValueError(f"Unknown AUTORESEARCH_PROFILE={profile!r}. Choose from: {', '.join(sorted(PRESETS))}")
-    preset = PRESETS[profile]
+    if profile not in presets:
+        raise ValueError(f"Unknown AUTORESEARCH_PROFILE={profile!r}. Choose from: {', '.join(sorted(presets))}")
+    preset = presets[profile]
     return replace(
         preset,
         aspect_ratio=env_int("AUTORESEARCH_ASPECT_RATIO", preset.aspect_ratio),
@@ -177,6 +161,7 @@ def resolve_training_preset(dist_cfg):
 
 
 def iter_rank_batches(loader, rank, world_size):
+    """Shard a single global batch stream across ranks without modifying prepare.py."""
     for _ in range(rank):
         next(loader)
     while True:
@@ -440,10 +425,10 @@ class GPT(nn.Module):
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             if self.activation_checkpointing and self.training:
-                def block_forward(x_in, cos, sin, block=block, layer_idx=i, window_size=self.window_sizes[i]):
-                    ve = self.value_embeds[str(layer_idx)](idx) if str(layer_idx) in self.value_embeds else None
+                def block_forward(x_in, cos, sin, token_idx, block=block, layer_idx=i, window_size=self.window_sizes[i]):
+                    ve = self.value_embeds[str(layer_idx)](token_idx) if str(layer_idx) in self.value_embeds else None
                     return block(x_in, ve, (cos, sin), window_size)
-                x = checkpoint(block_forward, x, *cos_sin, use_reentrant=False)
+                x = checkpoint(block_forward, x, *cos_sin, idx, use_reentrant=False)
             else:
                 ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
                 x = block(x, ve, cos_sin, self.window_sizes[i])
@@ -600,25 +585,73 @@ class MuonAdamW(torch.optim.Optimizer):
 # ---------------------------------------------------------------------------
 
 # Model architecture
-ASPECT_RATIO = DEFAULT_PRESET.aspect_ratio
-HEAD_DIM = DEFAULT_PRESET.head_dim
-WINDOW_PATTERN = DEFAULT_PRESET.window_pattern
+ASPECT_RATIO = REFERENCE_PRESET.aspect_ratio
+HEAD_DIM = REFERENCE_PRESET.head_dim
+WINDOW_PATTERN = REFERENCE_PRESET.window_pattern
 
 # Optimization
-TOTAL_BATCH_SIZE = DEFAULT_PRESET.total_batch_size
-EMBEDDING_LR = DEFAULT_PRESET.embedding_lr
-UNEMBEDDING_LR = DEFAULT_PRESET.unembedding_lr
-MATRIX_LR = DEFAULT_PRESET.matrix_lr
-SCALAR_LR = DEFAULT_PRESET.scalar_lr
-WEIGHT_DECAY = DEFAULT_PRESET.weight_decay
-ADAM_BETAS = DEFAULT_PRESET.adam_betas
-WARMUP_RATIO = DEFAULT_PRESET.warmup_ratio
-WARMDOWN_RATIO = DEFAULT_PRESET.warmdown_ratio
-FINAL_LR_FRAC = DEFAULT_PRESET.final_lr_frac
+TOTAL_BATCH_SIZE = REFERENCE_PRESET.total_batch_size
+EMBEDDING_LR = REFERENCE_PRESET.embedding_lr
+UNEMBEDDING_LR = REFERENCE_PRESET.unembedding_lr
+MATRIX_LR = REFERENCE_PRESET.matrix_lr
+SCALAR_LR = REFERENCE_PRESET.scalar_lr
+WEIGHT_DECAY = REFERENCE_PRESET.weight_decay
+ADAM_BETAS = REFERENCE_PRESET.adam_betas
+WARMUP_RATIO = REFERENCE_PRESET.warmup_ratio
+WARMDOWN_RATIO = REFERENCE_PRESET.warmdown_ratio
+FINAL_LR_FRAC = REFERENCE_PRESET.final_lr_frac
 
 # Model size
-DEPTH = DEFAULT_PRESET.depth
-DEVICE_BATCH_SIZE = DEFAULT_PRESET.device_batch_size
+DEPTH = REFERENCE_PRESET.depth
+DEVICE_BATCH_SIZE = REFERENCE_PRESET.device_batch_size
+
+
+def current_default_preset():
+    return TrainingPreset(
+        name="default",
+        aspect_ratio=ASPECT_RATIO,
+        head_dim=HEAD_DIM,
+        window_pattern=WINDOW_PATTERN,
+        total_batch_size=TOTAL_BATCH_SIZE,
+        embedding_lr=EMBEDDING_LR,
+        unembedding_lr=UNEMBEDDING_LR,
+        matrix_lr=MATRIX_LR,
+        scalar_lr=SCALAR_LR,
+        weight_decay=WEIGHT_DECAY,
+        adam_betas=ADAM_BETAS,
+        warmup_ratio=WARMUP_RATIO,
+        warmdown_ratio=WARMDOWN_RATIO,
+        final_lr_frac=FINAL_LR_FRAC,
+        depth=DEPTH,
+        device_batch_size=DEVICE_BATCH_SIZE,
+    )
+
+
+def build_training_presets():
+    default_preset = current_default_preset()
+    return {
+        "default": default_preset,
+        "rtx3090": replace(
+            default_preset,
+            name="rtx3090",
+            depth=max(default_preset.depth, RTX3090_MIN_DEPTH),
+            device_batch_size=min(default_preset.device_batch_size, RTX3090_MAX_DEVICE_BATCH_SIZE),
+            total_batch_size=min(default_preset.total_batch_size, RTX3090_TOTAL_BATCH_SIZE),
+            window_pattern="L",
+            activation_checkpointing=True,
+            compile_model=False,
+        ),
+        "rtx3090x2": replace(
+            default_preset,
+            name="rtx3090x2",
+            depth=max(default_preset.depth, RTX3090X2_MIN_DEPTH),
+            device_batch_size=min(default_preset.device_batch_size, RTX3090_MAX_DEVICE_BATCH_SIZE),
+            total_batch_size=min(default_preset.total_batch_size, RTX3090X2_TOTAL_BATCH_SIZE),
+            window_pattern="L",
+            activation_checkpointing=True,
+            compile_model=False,
+        ),
+    }
 
 
 def build_model_config(depth, vocab_size, preset):
@@ -760,8 +793,11 @@ def main():
 
             train_loss_f = reduce_mean(train_loss, dist_cfg).item()
 
-            # Fast fail: abort if loss is exploding
-            if train_loss_f > 100:
+            # Fast fail: abort if loss is exploding on any rank
+            fail_flag = torch.tensor(float(train_loss.detach().item() > 100), device=device)
+            if dist_cfg.enabled:
+                dist.all_reduce(fail_flag, op=dist.ReduceOp.MAX)
+            if fail_flag.item() > 0:
                 log("FAIL")
                 raise SystemExit(1)
 
@@ -769,7 +805,7 @@ def main():
             t1 = time.time()
             dt = t1 - t0
 
-            if step > 10:
+            if step > WARMUP_STEPS:
                 total_training_time += dt
 
             # Logging
@@ -778,7 +814,7 @@ def main():
             debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
             pct_done = 100 * progress
             tok_per_sec = int(preset.total_batch_size / dt)
-            mfu = 100 * num_flops_per_token * preset.total_batch_size / dt / (H100_BF16_PEAK_FLOPS * dist_cfg.world_size)
+            mfu = 100 * num_flops_per_token * preset.total_batch_size / dt / H100_BF16_PEAK_FLOPS
             remaining = max(0, TIME_BUDGET - total_training_time)
 
             log(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
@@ -794,7 +830,7 @@ def main():
             step += 1
 
             # Time's up — but only stop after warmup steps so we don't count compilation
-            if step > 10 and total_training_time >= TIME_BUDGET:
+            if step > WARMUP_STEPS and total_training_time >= TIME_BUDGET:
                 break
 
         log()  # newline after \r training log
@@ -813,7 +849,7 @@ def main():
 
         # Final summary
         t_end = time.time()
-        steady_state_mfu = 100 * num_flops_per_token * preset.total_batch_size * max(step - 10, 0) / total_training_time / (H100_BF16_PEAK_FLOPS * dist_cfg.world_size) if total_training_time > 0 else 0
+        steady_state_mfu = 100 * num_flops_per_token * preset.total_batch_size * max(step - WARMUP_STEPS, 0) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
         peak_vram_mb = torch.cuda.max_memory_allocated(device) / 1024 / 1024
 
         log("---")
