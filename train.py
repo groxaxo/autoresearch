@@ -1,7 +1,8 @@
 """
-Autoresearch pretraining script. Single-GPU, single-file.
+Autoresearch pretraining script. Single-file, CUDA-only.
 Cherry-picked and simplified from nanochat.
 Usage: uv run train.py
+       AUTORESEARCH_PROFILE=rtx3090x2 torchrun --standalone --nproc_per_node=2 train.py
 """
 
 import os
@@ -10,19 +11,30 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import gc
 import time
-from dataclasses import dataclass, asdict
+from contextlib import nullcontext
+from dataclasses import dataclass, asdict, replace
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.checkpoint import checkpoint
 
 from kernels import get_kernel
-cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
-
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
+
+fa3 = None
+
+
+def init_flash_attention():
+    global fa3
+    if fa3 is None:
+        cap = torch.cuda.get_device_capability()
+        # varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
+        repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+        fa3 = get_kernel(repo).flash_attn_interface
+    return fa3
 
 # ---------------------------------------------------------------------------
 # GPT Model
@@ -37,6 +49,158 @@ class GPTConfig:
     n_kv_head: int = 6
     n_embd: int = 768
     window_pattern: str = "SSSL"
+    activation_checkpointing: bool = False
+
+
+@dataclass(frozen=True)
+class DistributedConfig:
+    rank: int = 0
+    local_rank: int = 0
+    world_size: int = 1
+    enabled: bool = False
+
+    @property
+    def is_main(self):
+        return self.rank == 0
+
+
+@dataclass(frozen=True)
+class TrainingPreset:
+    name: str = "default"
+    aspect_ratio: int = 64
+    head_dim: int = 128
+    window_pattern: str = "SSSL"
+    total_batch_size: int = 2**19
+    embedding_lr: float = 0.6
+    unembedding_lr: float = 0.004
+    matrix_lr: float = 0.04
+    scalar_lr: float = 0.5
+    weight_decay: float = 0.2
+    adam_betas: tuple[float, float] = (0.8, 0.95)
+    warmup_ratio: float = 0.0
+    warmdown_ratio: float = 0.5
+    final_lr_frac: float = 0.0
+    depth: int = 8
+    device_batch_size: int = 128
+    activation_checkpointing: bool = False
+    compile_model: bool = True
+
+
+DEFAULT_PRESET = TrainingPreset()
+PRESETS = {
+    "default": DEFAULT_PRESET,
+    "rtx3090": replace(
+        DEFAULT_PRESET,
+        name="rtx3090",
+        depth=10,
+        device_batch_size=24,
+        total_batch_size=2**18,
+        window_pattern="L",
+        activation_checkpointing=True,
+        compile_model=False,
+    ),
+    "rtx3090x2": replace(
+        DEFAULT_PRESET,
+        name="rtx3090x2",
+        depth=12,
+        device_batch_size=24,
+        total_batch_size=2**19,
+        window_pattern="L",
+        activation_checkpointing=True,
+        compile_model=False,
+    ),
+}
+
+
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name, default):
+    value = os.environ.get(name)
+    return default if value is None else int(value)
+
+
+def env_float(name, default):
+    value = os.environ.get(name)
+    return default if value is None else float(value)
+
+
+def init_distributed():
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size == 1:
+        return DistributedConfig()
+    local_rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ["RANK"])
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl")
+    return DistributedConfig(rank=rank, local_rank=local_rank, world_size=world_size, enabled=True)
+
+
+def resolve_training_preset(dist_cfg):
+    profile = os.environ.get("AUTORESEARCH_PROFILE", "default").lower()
+    profile = {
+        "3090": "rtx3090",
+        "3090x2": "rtx3090x2",
+        "dual3090": "rtx3090x2",
+    }.get(profile, profile)
+    if profile == "rtx3090" and dist_cfg.world_size > 1:
+        profile = "rtx3090x2"
+    if profile not in PRESETS:
+        raise ValueError(f"Unknown AUTORESEARCH_PROFILE={profile!r}. Choose from: {', '.join(sorted(PRESETS))}")
+    preset = PRESETS[profile]
+    return replace(
+        preset,
+        aspect_ratio=env_int("AUTORESEARCH_ASPECT_RATIO", preset.aspect_ratio),
+        head_dim=env_int("AUTORESEARCH_HEAD_DIM", preset.head_dim),
+        window_pattern=os.environ.get("AUTORESEARCH_WINDOW_PATTERN", preset.window_pattern),
+        total_batch_size=env_int("AUTORESEARCH_TOTAL_BATCH_SIZE", preset.total_batch_size),
+        embedding_lr=env_float("AUTORESEARCH_EMBEDDING_LR", preset.embedding_lr),
+        unembedding_lr=env_float("AUTORESEARCH_UNEMBEDDING_LR", preset.unembedding_lr),
+        matrix_lr=env_float("AUTORESEARCH_MATRIX_LR", preset.matrix_lr),
+        scalar_lr=env_float("AUTORESEARCH_SCALAR_LR", preset.scalar_lr),
+        weight_decay=env_float("AUTORESEARCH_WEIGHT_DECAY", preset.weight_decay),
+        warmup_ratio=env_float("AUTORESEARCH_WARMUP_RATIO", preset.warmup_ratio),
+        warmdown_ratio=env_float("AUTORESEARCH_WARMDOWN_RATIO", preset.warmdown_ratio),
+        final_lr_frac=env_float("AUTORESEARCH_FINAL_LR_FRAC", preset.final_lr_frac),
+        depth=env_int("AUTORESEARCH_DEPTH", preset.depth),
+        device_batch_size=env_int("AUTORESEARCH_DEVICE_BATCH_SIZE", preset.device_batch_size),
+        activation_checkpointing=env_flag(
+            "AUTORESEARCH_ACTIVATION_CHECKPOINTING",
+            preset.activation_checkpointing,
+        ),
+        compile_model=env_flag("AUTORESEARCH_COMPILE", preset.compile_model),
+    )
+
+
+def iter_rank_batches(loader, rank, world_size):
+    for _ in range(rank):
+        next(loader)
+    while True:
+        batch = next(loader)
+        for _ in range(world_size - 1):
+            next(loader)
+        yield batch
+
+
+def unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
+def reduce_mean(tensor, dist_cfg):
+    if not dist_cfg.enabled:
+        return tensor
+    reduced = tensor.detach().clone()
+    dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+    reduced /= dist_cfg.world_size
+    return reduced
+
+
+def should_use_no_sync(dist_cfg, micro_step, grad_accum_steps):
+    return dist_cfg.enabled and micro_step + 1 < grad_accum_steps
 
 
 def norm(x):
@@ -89,7 +253,7 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        y = init_flash_attention().flash_attn_func(q, k, v, causal=True, window_size=window_size)
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -124,6 +288,7 @@ class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.activation_checkpointing = config.activation_checkpointing
         self.window_sizes = self._compute_window_sizes(config)
         self.transformer = nn.ModuleDict({
             "wte": nn.Embedding(config.vocab_size, config.n_embd),
@@ -274,8 +439,14 @@ class GPT(nn.Module):
         x0 = x
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
-            ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
-            x = block(x, ve, cos_sin, self.window_sizes[i])
+            if self.activation_checkpointing and self.training:
+                def block_forward(x_in, cos, sin, block=block, layer_idx=i, window_size=self.window_sizes[i]):
+                    ve = self.value_embeds[str(layer_idx)](idx) if str(layer_idx) in self.value_embeds else None
+                    return block(x_in, ve, (cos, sin), window_size)
+                x = checkpoint(block_forward, x, *cos_sin, use_reentrant=False)
+            else:
+                ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
+                x = block(x, ve, cos_sin, self.window_sizes[i])
         x = norm(x)
 
         softcap = 15
@@ -290,7 +461,7 @@ class GPT(nn.Module):
         return logits
 
 # ---------------------------------------------------------------------------
-# Optimizer (MuonAdamW, single GPU only)
+# Optimizer (MuonAdamW)
 # ---------------------------------------------------------------------------
 
 polar_express_coeffs = [
@@ -429,201 +600,236 @@ class MuonAdamW(torch.optim.Optimizer):
 # ---------------------------------------------------------------------------
 
 # Model architecture
-ASPECT_RATIO = 64       # model_dim = depth * ASPECT_RATIO
-HEAD_DIM = 128          # target head dimension for attention
-WINDOW_PATTERN = "SSSL" # sliding window pattern: L=full, S=half context
+ASPECT_RATIO = DEFAULT_PRESET.aspect_ratio
+HEAD_DIM = DEFAULT_PRESET.head_dim
+WINDOW_PATTERN = DEFAULT_PRESET.window_pattern
 
 # Optimization
-TOTAL_BATCH_SIZE = 2**19 # ~524K tokens per optimizer step
-EMBEDDING_LR = 0.6      # learning rate for token embeddings (Adam)
-UNEMBEDDING_LR = 0.004  # learning rate for lm_head (Adam)
-MATRIX_LR = 0.04        # learning rate for matrix parameters (Muon)
-SCALAR_LR = 0.5         # learning rate for per-layer scalars (Adam)
-WEIGHT_DECAY = 0.2      # cautious weight decay for Muon
-ADAM_BETAS = (0.8, 0.95) # Adam beta1, beta2
-WARMUP_RATIO = 0.0      # fraction of time budget for LR warmup
-WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
-FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
+TOTAL_BATCH_SIZE = DEFAULT_PRESET.total_batch_size
+EMBEDDING_LR = DEFAULT_PRESET.embedding_lr
+UNEMBEDDING_LR = DEFAULT_PRESET.unembedding_lr
+MATRIX_LR = DEFAULT_PRESET.matrix_lr
+SCALAR_LR = DEFAULT_PRESET.scalar_lr
+WEIGHT_DECAY = DEFAULT_PRESET.weight_decay
+ADAM_BETAS = DEFAULT_PRESET.adam_betas
+WARMUP_RATIO = DEFAULT_PRESET.warmup_ratio
+WARMDOWN_RATIO = DEFAULT_PRESET.warmdown_ratio
+FINAL_LR_FRAC = DEFAULT_PRESET.final_lr_frac
 
 # Model size
-DEPTH = 8               # number of transformer layers
-DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
+DEPTH = DEFAULT_PRESET.depth
+DEVICE_BATCH_SIZE = DEFAULT_PRESET.device_batch_size
 
-# ---------------------------------------------------------------------------
-# Setup: tokenizer, model, optimizer, dataloader
-# ---------------------------------------------------------------------------
 
-t_start = time.time()
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-torch.set_float32_matmul_precision("high")
-device = torch.device("cuda")
-autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-H100_BF16_PEAK_FLOPS = 989.5e12
-
-tokenizer = Tokenizer.from_directory()
-vocab_size = tokenizer.get_vocab_size()
-print(f"Vocab size: {vocab_size:,}")
-
-def build_model_config(depth):
-    base_dim = depth * ASPECT_RATIO
-    model_dim = ((base_dim + HEAD_DIM - 1) // HEAD_DIM) * HEAD_DIM
-    num_heads = model_dim // HEAD_DIM
+def build_model_config(depth, vocab_size, preset):
+    base_dim = depth * preset.aspect_ratio
+    model_dim = ((base_dim + preset.head_dim - 1) // preset.head_dim) * preset.head_dim
+    num_heads = model_dim // preset.head_dim
     return GPTConfig(
-        sequence_len=MAX_SEQ_LEN, vocab_size=vocab_size,
-        n_layer=depth, n_head=num_heads, n_kv_head=num_heads, n_embd=model_dim,
-        window_pattern=WINDOW_PATTERN,
+        sequence_len=MAX_SEQ_LEN,
+        vocab_size=vocab_size,
+        n_layer=depth,
+        n_head=num_heads,
+        n_kv_head=num_heads,
+        n_embd=model_dim,
+        window_pattern=preset.window_pattern,
+        activation_checkpointing=preset.activation_checkpointing,
     )
 
-config = build_model_config(DEPTH)
-print(f"Model config: {asdict(config)}")
 
-with torch.device("meta"):
-    model = GPT(config)
-model.to_empty(device=device)
-model.init_weights()
-
-param_counts = model.num_scaling_params()
-print("Parameter counts:")
-for key, value in param_counts.items():
-    print(f"  {key:24s}: {value:,}")
-num_params = param_counts['total']
-num_flops_per_token = model.estimate_flops()
-print(f"Estimated FLOPs per token: {num_flops_per_token:e}")
-
-tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
-assert TOTAL_BATCH_SIZE % tokens_per_fwdbwd == 0
-grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
-
-optimizer = model.setup_optimizer(
-    unembedding_lr=UNEMBEDDING_LR,
-    embedding_lr=EMBEDDING_LR,
-    scalar_lr=SCALAR_LR,
-    adam_betas=ADAM_BETAS,
-    matrix_lr=MATRIX_LR,
-    weight_decay=WEIGHT_DECAY,
-)
-
-model = torch.compile(model, dynamic=False)
-
-train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
-x, y, epoch = next(train_loader)  # prefetch first batch
-
-print(f"Time budget: {TIME_BUDGET}s")
-print(f"Gradient accumulation steps: {grad_accum_steps}")
-
-# Schedules (all based on progress = training_time / TIME_BUDGET)
-
-def get_lr_multiplier(progress):
-    if progress < WARMUP_RATIO:
-        return progress / WARMUP_RATIO if WARMUP_RATIO > 0 else 1.0
-    elif progress < 1.0 - WARMDOWN_RATIO:
+def get_lr_multiplier(progress, preset):
+    if progress < preset.warmup_ratio:
+        return progress / preset.warmup_ratio if preset.warmup_ratio > 0 else 1.0
+    elif preset.warmdown_ratio == 0 or progress < 1.0 - preset.warmdown_ratio:
         return 1.0
     else:
-        cooldown = (1.0 - progress) / WARMDOWN_RATIO
-        return cooldown * 1.0 + (1 - cooldown) * FINAL_LR_FRAC
+        cooldown = (1.0 - progress) / preset.warmdown_ratio
+        return cooldown * 1.0 + (1 - cooldown) * preset.final_lr_frac
 
 def get_muon_momentum(step):
     frac = min(step / 300, 1)
     return (1 - frac) * 0.85 + frac * 0.95
 
-def get_weight_decay(progress):
-    return WEIGHT_DECAY * (1 - progress)
+def get_weight_decay(progress, preset):
+    return preset.weight_decay * (1 - progress)
 
-# ---------------------------------------------------------------------------
-# Training loop
-# ---------------------------------------------------------------------------
+def main():
+    # -----------------------------------------------------------------------
+    # Setup: tokenizer, model, optimizer, dataloader
+    # -----------------------------------------------------------------------
+    dist_cfg = init_distributed()
+    try:
+        t_start = time.time()
+        seed = 42 + dist_cfg.rank
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        device = torch.device("cuda", dist_cfg.local_rank)
+        autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+        H100_BF16_PEAK_FLOPS = 989.5e12
+        preset = resolve_training_preset(dist_cfg)
 
-t_start_training = time.time()
-smooth_train_loss = 0
-total_training_time = 0
-step = 0
+        def log(*args, **kwargs):
+            if dist_cfg.is_main:
+                print(*args, **kwargs)
 
-while True:
-    torch.cuda.synchronize()
-    t0 = time.time()
-    for micro_step in range(grad_accum_steps):
-        with autocast_ctx:
-            loss = model(x, y)
-        train_loss = loss.detach()
-        loss = loss / grad_accum_steps
-        loss.backward()
+        tokenizer = Tokenizer.from_directory()
+        vocab_size = tokenizer.get_vocab_size()
+        log(f"Vocab size: {vocab_size:,}")
+        log(f"Training preset: {preset.name}")
+        log(f"Distributed: {dist_cfg.enabled} (world_size={dist_cfg.world_size})")
+
+        config = build_model_config(preset.depth, vocab_size, preset)
+        log(f"Model config: {asdict(config)}")
+
+        with torch.device("meta"):
+            model = GPT(config)
+        model.to_empty(device=device)
+        model.init_weights()
+
+        param_counts = model.num_scaling_params()
+        log("Parameter counts:")
+        for key, value in param_counts.items():
+            log(f"  {key:24s}: {value:,}")
+        num_params = param_counts['total']
+        num_flops_per_token = model.estimate_flops()
+        log(f"Estimated FLOPs per token: {num_flops_per_token:e}")
+
+        tokens_per_fwdbwd = preset.device_batch_size * MAX_SEQ_LEN * dist_cfg.world_size
+        assert preset.total_batch_size % tokens_per_fwdbwd == 0
+        grad_accum_steps = preset.total_batch_size // tokens_per_fwdbwd
+
+        optimizer = model.setup_optimizer(
+            unembedding_lr=preset.unembedding_lr,
+            embedding_lr=preset.embedding_lr,
+            scalar_lr=preset.scalar_lr,
+            adam_betas=preset.adam_betas,
+            matrix_lr=preset.matrix_lr,
+            weight_decay=preset.weight_decay,
+        )
+
+        if preset.compile_model:
+            model = torch.compile(model, dynamic=False)
+        if dist_cfg.enabled:
+            model = DDP(model, device_ids=[dist_cfg.local_rank], output_device=dist_cfg.local_rank, broadcast_buffers=False)
+
+        train_loader = iter_rank_batches(
+            make_dataloader(tokenizer, preset.device_batch_size, MAX_SEQ_LEN, "train"),
+            dist_cfg.rank,
+            dist_cfg.world_size,
+        )
         x, y, epoch = next(train_loader)
 
-    # Progress and schedules
-    progress = min(total_training_time / TIME_BUDGET, 1.0)
-    lrm = get_lr_multiplier(progress)
-    muon_momentum = get_muon_momentum(step)
-    muon_weight_decay = get_weight_decay(progress)
-    for group in optimizer.param_groups:
-        group["lr"] = group["initial_lr"] * lrm
-        if group['kind'] == 'muon':
-            group["momentum"] = muon_momentum
-            group["weight_decay"] = muon_weight_decay
-    optimizer.step()
-    model.zero_grad(set_to_none=True)
+        log(f"Time budget: {TIME_BUDGET}s")
+        log(f"Gradient accumulation steps: {grad_accum_steps}")
 
-    train_loss_f = train_loss.item()
+        # -------------------------------------------------------------------
+        # Training loop
+        # -------------------------------------------------------------------
+        t_start_training = time.time()
+        smooth_train_loss = 0
+        total_training_time = 0
+        step = 0
 
-    # Fast fail: abort if loss is exploding
-    if train_loss_f > 100:
-        print("FAIL")
-        exit(1)
+        while True:
+            torch.cuda.synchronize(device)
+            t0 = time.time()
+            for micro_step in range(grad_accum_steps):
+                sync_context = model.no_sync() if should_use_no_sync(dist_cfg, micro_step, grad_accum_steps) else nullcontext()
+                with sync_context:
+                    with autocast_ctx:
+                        loss = model(x, y)
+                    train_loss = loss.detach()
+                    (loss / grad_accum_steps).backward()
+                x, y, epoch = next(train_loader)
 
-    torch.cuda.synchronize()
-    t1 = time.time()
-    dt = t1 - t0
+            # Progress and schedules
+            progress = min(total_training_time / TIME_BUDGET, 1.0)
+            lrm = get_lr_multiplier(progress, preset)
+            muon_momentum = get_muon_momentum(step)
+            muon_weight_decay = get_weight_decay(progress, preset)
+            for group in optimizer.param_groups:
+                group["lr"] = group["initial_lr"] * lrm
+                if group['kind'] == 'muon':
+                    group["momentum"] = muon_momentum
+                    group["weight_decay"] = muon_weight_decay
+            optimizer.step()
+            model.zero_grad(set_to_none=True)
 
-    if step > 10:
-        total_training_time += dt
+            train_loss_f = reduce_mean(train_loss, dist_cfg).item()
 
-    # Logging
-    ema_beta = 0.9
-    smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f
-    debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
-    pct_done = 100 * progress
-    tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
-    remaining = max(0, TIME_BUDGET - total_training_time)
+            # Fast fail: abort if loss is exploding
+            if train_loss_f > 100:
+                log("FAIL")
+                raise SystemExit(1)
 
-    print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+            torch.cuda.synchronize(device)
+            t1 = time.time()
+            dt = t1 - t0
 
-    # GC management (Python's GC causes ~500ms stalls)
-    if step == 0:
-        gc.collect()
-        gc.freeze()
-        gc.disable()
-    elif (step + 1) % 5000 == 0:
-        gc.collect()
+            if step > 10:
+                total_training_time += dt
 
-    step += 1
+            # Logging
+            ema_beta = 0.9
+            smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss_f
+            debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
+            pct_done = 100 * progress
+            tok_per_sec = int(preset.total_batch_size / dt)
+            mfu = 100 * num_flops_per_token * preset.total_batch_size / dt / (H100_BF16_PEAK_FLOPS * dist_cfg.world_size)
+            remaining = max(0, TIME_BUDGET - total_training_time)
 
-    # Time's up — but only stop after warmup steps so we don't count compilation
-    if step > 10 and total_training_time >= TIME_BUDGET:
-        break
+            log(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
 
-print()  # newline after \r training log
+            # GC management (Python's GC causes ~500ms stalls)
+            if step == 0:
+                gc.collect()
+                gc.freeze()
+                gc.disable()
+            elif (step + 1) % 5000 == 0:
+                gc.collect()
 
-total_tokens = step * TOTAL_BATCH_SIZE
+            step += 1
 
-# Final eval
-model.eval()
-with autocast_ctx:
-    val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)
+            # Time's up — but only stop after warmup steps so we don't count compilation
+            if step > 10 and total_training_time >= TIME_BUDGET:
+                break
 
-# Final summary
-t_end = time.time()
-startup_time = t_start_training - t_start
-steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
-peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
+        log()  # newline after \r training log
 
-print("---")
-print(f"val_bpb:          {val_bpb:.6f}")
-print(f"training_seconds: {total_training_time:.1f}")
-print(f"total_seconds:    {t_end - t_start:.1f}")
-print(f"peak_vram_mb:     {peak_vram_mb:.1f}")
-print(f"mfu_percent:      {steady_state_mfu:.2f}")
-print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
-print(f"num_steps:        {step}")
-print(f"num_params_M:     {num_params / 1e6:.1f}")
-print(f"depth:            {DEPTH}")
+        total_tokens = step * preset.total_batch_size
+
+        if dist_cfg.enabled:
+            dist.barrier()
+
+        # Final eval
+        val_bpb = float("nan")
+        if dist_cfg.is_main:
+            model.eval()
+            with autocast_ctx:
+                val_bpb = evaluate_bpb(unwrap_model(model), tokenizer, preset.device_batch_size)
+
+        # Final summary
+        t_end = time.time()
+        steady_state_mfu = 100 * num_flops_per_token * preset.total_batch_size * max(step - 10, 0) / total_training_time / (H100_BF16_PEAK_FLOPS * dist_cfg.world_size) if total_training_time > 0 else 0
+        peak_vram_mb = torch.cuda.max_memory_allocated(device) / 1024 / 1024
+
+        log("---")
+        log(f"val_bpb:          {val_bpb:.6f}")
+        log(f"training_seconds: {total_training_time:.1f}")
+        log(f"total_seconds:    {t_end - t_start:.1f}")
+        log(f"peak_vram_mb:     {peak_vram_mb:.1f}")
+        log(f"mfu_percent:      {steady_state_mfu:.2f}")
+        log(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
+        log(f"num_steps:        {step}")
+        log(f"num_params_M:     {num_params / 1e6:.1f}")
+        log(f"depth:            {preset.depth}")
+    finally:
+        if dist_cfg.enabled and dist.is_initialized():
+            dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()

@@ -20,7 +20,7 @@ If you are new to neural networks, this ["Dummy's Guide"](https://x.com/hooeem/s
 
 ## Quick start
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+**Requirements:** An NVIDIA GPU (tested on H100, with new presets for RTX 3090 / dual RTX 3090), Python 3.10+, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 
@@ -66,7 +66,49 @@ pyproject.toml  — dependencies
 
 ## Platform support
 
-This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+This code currently requires that you have an NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+
+### RTX 3090 / Ampere presets
+
+`train.py` now has a small runtime profile layer that keeps the default H100-ish settings intact, but adds lower-VRAM Ampere-friendly presets inspired by the simple wins that tools like Unsloth lean on:
+
+- **activation checkpointing** to trade extra compute for much lower activation memory
+- **full-context `WINDOW_PATTERN="L"`** to avoid inefficient mixed sliding-window patterns on consumer Ampere cards
+- **smaller per-GPU microbatches + gradient accumulation** so you can keep the global token budget high without blowing past 24 GB
+- **optional 2-GPU DDP** for dual-3090 boxes
+
+Single 3090:
+
+```bash
+AUTORESEARCH_PROFILE=rtx3090 uv run train.py
+```
+
+Dual 3090:
+
+```bash
+AUTORESEARCH_PROFILE=rtx3090x2 uv run -- torchrun --standalone --nproc_per_node=2 train.py
+```
+
+The presets are intentionally conservative and can be overridden with environment variables when you want to push harder:
+
+```bash
+AUTORESEARCH_PROFILE=rtx3090 \
+AUTORESEARCH_DEVICE_BATCH_SIZE=16 \
+AUTORESEARCH_TOTAL_BATCH_SIZE=$((2**17)) \
+AUTORESEARCH_DEPTH=12 \
+uv run train.py
+```
+
+Supported overrides include:
+
+- `AUTORESEARCH_DEVICE_BATCH_SIZE`
+- `AUTORESEARCH_TOTAL_BATCH_SIZE`
+- `AUTORESEARCH_DEPTH`
+- `AUTORESEARCH_ASPECT_RATIO`
+- `AUTORESEARCH_HEAD_DIM`
+- `AUTORESEARCH_WINDOW_PATTERN`
+- `AUTORESEARCH_ACTIVATION_CHECKPOINTING`
+- `AUTORESEARCH_COMPILE`
 
 Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
 
