@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AutoResearch — Architecture Index</title>
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #03050d;
+      --surface:   #080e1f;
+      --card:      #0c1428;
+      --border:    #1a2a4a;
+      --accent:    #00d4ff;
+      --accent2:   #7c3aed;
+      --accent3:   #06ffa5;
+      --text:      #c8d8f0;
+      --muted:     #5a7090;
+      --warn:      #ffb800;
+      --glow:      rgba(0, 212, 255, 0.15);
+      --glow2:     rgba(124, 58, 237, 0.15);
+      --radius:    10px;
+      --mono:      'Courier New', Courier, monospace;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      line-height: 1.65;
+      overflow-x: hidden;
+    }
+
+    /* ── Animated starfield background ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        radial-gradient(1px 1px at 20% 30%, rgba(0,212,255,.4) 0%, transparent 100%),
+        radial-gradient(1px 1px at 80% 10%, rgba(124,58,237,.4) 0%, transparent 100%),
+        radial-gradient(1px 1px at 60% 70%, rgba(6,255,165,.3) 0%, transparent 100%),
+        radial-gradient(1px 1px at 10% 80%, rgba(0,212,255,.3) 0%, transparent 100%),
+        radial-gradient(1px 1px at 90% 55%, rgba(124,58,237,.3) 0%, transparent 100%);
+      background-size: 400px 400px, 600px 600px, 300px 300px, 500px 500px, 700px 700px;
+      animation: drift 60s linear infinite;
+      pointer-events: none;
+      z-index: 0;
+    }
+    @keyframes drift {
+      from { background-position: 0 0, 0 0, 0 0, 0 0, 0 0; }
+      to   { background-position: 400px 200px, -300px 400px, 200px -300px, -500px 200px, 300px -400px; }
+    }
+
+    /* ── Layout wrapper ── */
+    .wrapper {
+      position: relative;
+      z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px 80px;
+    }
+
+    /* ── Top nav bar ── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(3, 5, 13, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    nav .logo {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      color: var(--accent);
+      text-transform: uppercase;
+      flex: 0 0 auto;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .82rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      transition: color .2s;
+    }
+    nav a:hover { color: var(--accent); }
+
+    /* ── Hero ── */
+    .hero {
+      padding: 80px 0 60px;
+      text-align: center;
+    }
+    .hero-tag {
+      display: inline-block;
+      font-size: .72rem;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--accent3);
+      border: 1px solid var(--accent3);
+      border-radius: 40px;
+      padding: 4px 14px;
+      margin-bottom: 24px;
+      animation: pulse-border 3s ease-in-out infinite;
+    }
+    @keyframes pulse-border {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(6,255,165,0); }
+      50%       { box-shadow: 0 0 12px 2px rgba(6,255,165,.3); }
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3.6rem);
+      font-weight: 800;
+      letter-spacing: -.02em;
+      background: linear-gradient(120deg, var(--accent) 0%, var(--accent2) 60%, var(--accent3) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 20px;
+    }
+    .hero p {
+      max-width: 640px;
+      margin: 0 auto 36px;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+    .hero-stats {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      flex-wrap: wrap;
+    }
+    .stat {
+      text-align: center;
+    }
+    .stat-val {
+      display: block;
+      font-size: 1.9rem;
+      font-weight: 700;
+      color: var(--accent);
+      font-family: var(--mono);
+    }
+    .stat-lbl {
+      font-size: .75rem;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--muted);
+    }
+
+    /* ── Section headings ── */
+    .section { margin-top: 72px; }
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+    .section-icon {
+      width: 36px; height: 36px;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+    }
+    .icon-cyan  { background: rgba(0,212,255,.12); color: var(--accent); }
+    .icon-purple{ background: rgba(124,58,237,.12); color: var(--accent2); }
+    .icon-green { background: rgba(6,255,165,.12);  color: var(--accent3); }
+    .icon-gold  { background: rgba(255,184,0,.12);  color: var(--warn); }
+
+    .section-header h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -.01em;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+      transition: border-color .25s, box-shadow .25s;
+    }
+    .card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 0 24px var(--glow);
+    }
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: var(--accent);
+    }
+    .card p, .card li { font-size: .9rem; color: var(--muted); }
+    .card ul { padding-left: 16px; }
+    .card ul li { margin-bottom: 4px; }
+
+    /* ── Data flow pipeline ── */
+    .pipeline {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      overflow-x: auto;
+    }
+    .pipe-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      flex: 0 0 auto;
+    }
+    .pipe-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: .8rem;
+      color: var(--text);
+      white-space: nowrap;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .pipe-box:hover {
+      border-color: var(--accent3);
+      box-shadow: 0 0 12px rgba(6,255,165,.2);
+    }
+    .pipe-sub {
+      font-size: .68rem;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .pipe-arrow {
+      font-size: 1.2rem;
+      color: var(--muted);
+      padding: 0 6px;
+      flex-shrink: 0;
+      align-self: center;
+    }
+
+    /* ── Experiment loop ── */
+    .loop-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .loop-item {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      position: relative;
+    }
+    .loop-item:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      left: 15px;
+      top: 32px;
+      bottom: -16px;
+      width: 1px;
+      background: linear-gradient(to bottom, var(--accent), transparent);
+    }
+    .loop-num {
+      flex-shrink: 0;
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      border: 1px solid var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: .75rem;
+      font-weight: 700;
+      color: var(--accent);
+      background: rgba(0,212,255,.06);
+      margin-top: 2px;
+    }
+    .loop-item + .loop-item { margin-top: 16px; }
+    .loop-text {
+      font-size: .9rem;
+      color: var(--text);
+      padding-top: 4px;
+    }
+    .loop-text code {
+      background: rgba(0,212,255,.1);
+      border: 1px solid rgba(0,212,255,.2);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-family: var(--mono);
+      font-size: .82rem;
+      color: var(--accent);
+    }
+
+    /* ── Module file cards ── */
+    .file-tabs { display: flex; gap: 0; margin-bottom: -1px; }
+    .file-tab {
+      padding: 9px 20px;
+      font-size: .82rem;
+      font-family: var(--mono);
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: var(--radius) var(--radius) 0 0;
+      cursor: pointer;
+      background: var(--surface);
+      color: var(--muted);
+      transition: background .2s, color .2s;
+      user-select: none;
+    }
+    .file-tab.active {
+      background: var(--card);
+      color: var(--accent);
+      border-color: var(--accent);
+      border-bottom: 1px solid var(--card);
+      z-index: 1;
+    }
+    .file-content {
+      display: none;
+      background: var(--card);
+      border: 1px solid var(--accent);
+      border-radius: 0 var(--radius) var(--radius) var(--radius);
+      padding: 28px;
+    }
+    .file-content.active { display: block; }
+
+    /* ── Class/function tables ── */
+    .fn-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .84rem;
+      margin-top: 16px;
+    }
+    .fn-table th {
+      text-align: left;
+      padding: 8px 12px;
+      font-size: .72rem;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .fn-table td {
+      padding: 9px 12px;
+      border-bottom: 1px solid rgba(26,42,74,.5);
+      vertical-align: top;
+    }
+    .fn-table tr:hover td { background: rgba(0,212,255,.03); }
+    .fn-name {
+      font-family: var(--mono);
+      color: var(--accent3);
+      white-space: nowrap;
+    }
+    .fn-desc { color: var(--muted); }
+
+    /* ── Architecture diagram ── */
+    .arch-diagram {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      overflow: hidden;
+    }
+    .arch-layer {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      border-radius: 8px;
+      margin-bottom: 4px;
+      font-size: .88rem;
+      border: 1px solid transparent;
+      transition: border-color .2s, background .2s;
+      cursor: default;
+    }
+    .arch-layer:hover { border-color: var(--border); background: rgba(0,212,255,.03); }
+    .arch-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .arch-connector {
+      width: 1px;
+      height: 18px;
+      background: linear-gradient(to bottom, var(--border), transparent);
+      margin-left: 20px;
+    }
+    .arch-label { font-weight: 600; color: var(--text); min-width: 220px; }
+    .arch-meta  { color: var(--muted); font-size: .8rem; }
+
+    /* ── Hyperparameter table ── */
+    .hp-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .hp-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      transition: border-color .2s;
+    }
+    .hp-item:hover { border-color: var(--accent2); }
+    .hp-name {
+      font-family: var(--mono);
+      font-size: .82rem;
+      color: var(--accent2);
+      margin-bottom: 4px;
+    }
+    .hp-val {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .hp-desc { font-size: .78rem; color: var(--muted); }
+
+    /* ── Optimizer section ── */
+    .opt-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 640px) { .opt-grid { grid-template-columns: 1fr; } }
+    .opt-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+    }
+    .opt-card h4 {
+      font-size: .92rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .opt-card.muon h4  { color: var(--accent2); }
+    .opt-card.adamw h4 { color: var(--accent); }
+    .opt-card ul { padding-left: 16px; }
+    .opt-card li { font-size: .84rem; color: var(--muted); margin-bottom: 5px; }
+
+    /* ── Constants / metric boxes ── */
+    .const-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .const-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 40px;
+      padding: 5px 14px;
+      font-size: .8rem;
+    }
+    .const-pill .cname { color: var(--warn); font-family: var(--mono); }
+    .const-pill .cval  { color: var(--text); font-weight: 600; }
+
+    /* ── Constraint badges ── */
+    .badge-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 12px;
+      border-radius: 40px;
+      font-size: .78rem;
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+    .badge-red    { background: rgba(239,68,68,.12);   color: #f87171; border: 1px solid rgba(239,68,68,.25); }
+    .badge-green  { background: rgba(6,255,165,.1);    color: var(--accent3); border: 1px solid rgba(6,255,165,.25); }
+    .badge-purple { background: rgba(124,58,237,.12);  color: #a78bfa; border: 1px solid rgba(124,58,237,.25); }
+
+    /* ── JSON viewer toggle ── */
+    .json-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 18px;
+      background: rgba(0,212,255,.08);
+      border: 1px solid var(--accent);
+      border-radius: 40px;
+      cursor: pointer;
+      font-size: .84rem;
+      color: var(--accent);
+      font-family: var(--mono);
+      margin-bottom: 14px;
+      transition: background .2s;
+      user-select: none;
+    }
+    .json-toggle:hover { background: rgba(0,212,255,.16); }
+    .json-block {
+      display: none;
+      background: #050b1a;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      overflow: auto;
+      max-height: 520px;
+    }
+    .json-block.open { display: block; }
+    .json-block pre {
+      font-family: var(--mono);
+      font-size: .8rem;
+      color: #8eaed6;
+      white-space: pre;
+    }
+    /* JSON syntax highlighting */
+    .jk  { color: #7dd3fc; } /* key */
+    .js  { color: #86efac; } /* string value */
+    .jn  { color: #fca5a5; } /* number */
+    .jb  { color: #c4b5fd; } /* boolean/null */
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      padding: 40px 0 20px;
+      font-size: .78rem;
+      color: var(--muted);
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  </style>
+</head>
+<body>
+
+<!-- ─────────────────────── NAV ─────────────────────── -->
+<nav>
+  <span class="logo">⚡ AutoResearch</span>
+  <a href="#overview">Overview</a>
+  <a href="#dataflow">Data Flow</a>
+  <a href="#loop">Experiment Loop</a>
+  <a href="#model">GPT Model</a>
+  <a href="#optimizer">Optimizer</a>
+  <a href="#hyperparams">Hyperparams</a>
+  <a href="#modules">Modules</a>
+  <a href="#json">JSON Index</a>
+</nav>
+
+<!-- ─────────────────────── HERO ─────────────────────── -->
+<div class="wrapper">
+  <div class="hero" id="overview">
+    <div class="hero-tag">Architecture Index</div>
+    <h1>AutoResearch</h1>
+    <p>
+      An autonomous AI research platform — the agent modifies <code style="color:var(--accent3);font-family:var(--mono)">train.py</code>,
+      trains for 5 minutes, checks if <em>val_bpb</em> improved, and iterates overnight.
+      ~12 experiments/hour &nbsp;·&nbsp; ~100 experiments while you sleep.
+    </p>
+    <div class="hero-stats">
+      <div class="stat"><span class="stat-val">5 min</span><span class="stat-lbl">Fixed time budget</span></div>
+      <div class="stat"><span class="stat-val">val_bpb</span><span class="stat-lbl">Eval metric</span></div>
+      <div class="stat"><span class="stat-val">1 GPU</span><span class="stat-lbl">Single device</span></div>
+      <div class="stat"><span class="stat-val">8 192</span><span class="stat-lbl">Vocab size</span></div>
+      <div class="stat"><span class="stat-val">2 048</span><span class="stat-lbl">Max seq len</span></div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── DESIGN PRINCIPLES ─────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-cyan">🎯</div>
+      <h2>Design Principles</h2>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <h3>Single File to Modify</h3>
+        <p>The agent only edits <code style="font-family:var(--mono);color:var(--accent3)">train.py</code>. Diffs are small, readable and reversible. <code style="font-family:var(--mono);color:var(--accent3)">prepare.py</code> is never touched.</p>
+      </div>
+      <div class="card">
+        <h3>Fixed Time Budget</h3>
+        <p>Every run lasts exactly 5 minutes (wall-clock, excluding compile). Models of all sizes compete on equal footing.</p>
+      </div>
+      <div class="card">
+        <h3>Vocab-Independent Metric</h3>
+        <p><em>val_bpb</em> (bits per byte) normalises by token byte length, so architectural changes are fairly compared regardless of vocabulary size.</p>
+      </div>
+      <div class="card">
+        <h3>Fully Autonomous</h3>
+        <p>The agent never pauses to ask the human for continuation. The human programs the strategy in <code style="font-family:var(--mono);color:var(--accent3)">program.md</code>, not the experiments.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── DATA FLOW ─────────────────────── -->
+  <div class="section" id="dataflow">
+    <div class="section-header">
+      <div class="section-icon icon-green">🔄</div>
+      <h2>Data Flow Pipeline</h2>
+    </div>
+    <div class="pipeline">
+      <div class="pipe-step">
+        <div class="pipe-box">HF Parquet Shards</div>
+        <div class="pipe-sub">climbmix-400b</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <div class="pipe-box">download_data()</div>
+        <div class="pipe-sub">multiprocess, 8 workers</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <div class="pipe-box">train_tokenizer()</div>
+        <div class="pipe-sub">rustbpe → tiktoken BPE</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <div class="pipe-box">make_dataloader()</div>
+        <div class="pipe-sub">best-fit packing, 100% util</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <div class="pipe-box">GPT.forward()</div>
+        <div class="pipe-sub">bfloat16 autocast</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <div class="pipe-box">MuonAdamW.step()</div>
+        <div class="pipe-sub">fused kernels</div>
+      </div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-step">
+        <div class="pipe-box">evaluate_bpb()</div>
+        <div class="pipe-sub">val shard 06542</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── EXPERIMENT LOOP ─────────────────────── -->
+  <div class="section" id="loop">
+    <div class="section-header">
+      <div class="section-icon icon-purple">♻️</div>
+      <h2>Autonomous Experiment Loop</h2>
+    </div>
+    <div class="card" style="padding:28px 32px;">
+      <div class="loop-list">
+        <div class="loop-item"><div class="loop-num">1</div><div class="loop-text">Read current git log and <code>train.py</code> state</div></div>
+        <div class="loop-item"><div class="loop-num">2</div><div class="loop-text">Choose one modification (architecture, hyperparams, optimizer, etc.) and edit <code>train.py</code></div></div>
+        <div class="loop-item"><div class="loop-num">3</div><div class="loop-text"><code>git commit</code> the change with a descriptive message</div></div>
+        <div class="loop-item"><div class="loop-num">4</div><div class="loop-text">Run <code>uv run train.py &gt; run.log 2&gt;&amp;1</code> — waits up to ~10 minutes</div></div>
+        <div class="loop-item"><div class="loop-num">5</div><div class="loop-text">Extract <code>val_bpb</code> and <code>peak_vram_mb</code> from <code>run.log</code></div></div>
+        <div class="loop-item"><div class="loop-num">6</div><div class="loop-text">Append row to <code>results.tsv</code>: <code>commit · val_bpb · memory_gb · status · description</code></div></div>
+        <div class="loop-item"><div class="loop-num">7</div><div class="loop-text">If <code>val_bpb</code> improved → keep commit; else → <code>git reset --hard HEAD~1</code></div></div>
+      </div>
+    </div>
+
+    <div style="margin-top:20px;">
+      <div class="badge-list">
+        <div class="badge badge-red">✗ Never modify prepare.py</div>
+        <div class="badge badge-red">✗ Never install new packages</div>
+        <div class="badge badge-green">✓ Fully autonomous — no human prompts</div>
+        <div class="badge badge-purple">⚡ ~12 experiments / hour</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── GPT MODEL ─────────────────────── -->
+  <div class="section" id="model">
+    <div class="section-header">
+      <div class="section-icon icon-cyan">🧠</div>
+      <h2>GPT Model Architecture</h2>
+    </div>
+
+    <div class="arch-diagram">
+
+      <div class="arch-layer">
+        <div class="arch-dot" style="background:var(--accent3)"></div>
+        <div class="arch-label">Token Embedding — <code style="font-size:.8rem;font-family:var(--mono)">wte</code></div>
+        <div class="arch-meta">Embedding(vocab_size, n_embd) → RMS Norm → x₀</div>
+      </div>
+      <div class="arch-connector"></div>
+
+      <div class="arch-layer">
+        <div class="arch-dot" style="background:var(--accent)"></div>
+        <div class="arch-label">Value Embeddings — <code style="font-size:.8rem;font-family:var(--mono)">value_embeds[i]</code></div>
+        <div class="arch-meta">Embedding(vocab_size, kv_dim) — on alternating VE layers</div>
+      </div>
+      <div class="arch-connector"></div>
+
+      <div class="arch-layer" style="border:1px solid var(--border); background: rgba(0,212,255,.03);">
+        <div class="arch-dot" style="background:var(--accent2)"></div>
+        <div class="arch-label">×N Transformer Block</div>
+        <div class="arch-meta">x = λᵣ·x + λₓ₀·x₀ → Block(x)</div>
+      </div>
+
+      <!-- indent block contents -->
+      <div style="margin-left:32px; border-left:1px solid var(--border); padding-left:20px; margin-top:4px; margin-bottom:4px;">
+
+        <div class="arch-layer">
+          <div class="arch-dot" style="background:var(--accent)"></div>
+          <div class="arch-label">CausalSelfAttention</div>
+          <div class="arch-meta">Pre-norm → Q,K,V proj → VE mix → RoPE → QK-norm → FA3 → out-proj</div>
+        </div>
+        <div class="arch-connector"></div>
+
+        <div class="arch-layer">
+          <div class="arch-dot" style="background:var(--accent3)"></div>
+          <div class="arch-label">MLP</div>
+          <div class="arch-meta">Pre-norm → fc (×4) → relu² → proj</div>
+        </div>
+      </div>
+
+      <div class="arch-connector"></div>
+
+      <div class="arch-layer">
+        <div class="arch-dot" style="background:var(--warn)"></div>
+        <div class="arch-label">Output Head</div>
+        <div class="arch-meta">RMS Norm → lm_head Linear → softcap(logits, 15) → cross-entropy</div>
+      </div>
+    </div>
+
+    <!-- sub-module details -->
+    <div class="card-grid" style="margin-top:16px;">
+      <div class="card">
+        <h3>Rotary Embeddings (RoPE)</h3>
+        <p>Pre-computed cos/sin buffers up to <code style="font-family:var(--mono)">sequence_len × 10</code>. Base = 10 000. Applied to Q and K after QK-norm. bfloat16 precision.</p>
+      </div>
+      <div class="card">
+        <h3>Sliding Window Attention</h3>
+        <p>Pattern characters map to window sizes: <code style="font-family:var(--mono)">L = sequence_len</code>, <code style="font-family:var(--mono)">S = sequence_len/2</code>. Pattern cycles; last layer is always forced to L (full context).</p>
+      </div>
+      <div class="card">
+        <h3>Value Residual (ResFormer)</h3>
+        <p>On VE layers: <code style="font-family:var(--mono)">v = c_v(x) + gate·ve(idx)</code>. Gate = 2·σ(linear(x[…,:32])). Initialised neutral (gate ≈ 1).</p>
+      </div>
+      <div class="card">
+        <h3>Per-Layer Scaling</h3>
+        <p><code style="font-family:var(--mono)">resid_lambdas</code> (init 1.0) scales the residual stream. <code style="font-family:var(--mono)">x0_lambdas</code> (init 0.1) mixes in the post-embedding anchor <em>x₀</em>.</p>
+      </div>
+      <div class="card">
+        <h3>Logit Soft-Cap</h3>
+        <p>Final logits capped via <code style="font-family:var(--mono)">15·tanh(logits/15)</code> to prevent training instability. Logits converted to float32 before the cap.</p>
+      </div>
+      <div class="card">
+        <h3>Memory Tricks</h3>
+        <p>Meta-device instantiation → <code style="font-family:var(--mono)">to_empty(device)</code> → custom init. Embeddings cast to bfloat16. PYTORCH_ALLOC_CONF expandable segments. GC frozen after step 0.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── OPTIMIZER ─────────────────────── -->
+  <div class="section" id="optimizer">
+    <div class="section-header">
+      <div class="section-icon icon-purple">⚙️</div>
+      <h2>MuonAdamW Optimizer</h2>
+    </div>
+
+    <div class="opt-grid">
+      <div class="opt-card muon">
+        <h4>Muon — 2D Matrix Parameters</h4>
+        <ul>
+          <li>Applies to all attention and MLP weight matrices</li>
+          <li>Nesterov momentum buffer (0.85 → 0.95 ramp over 300 steps)</li>
+          <li><strong>Polar Express</strong> orthogonalisation: 5-iteration polynomial approximation of matrix square root</li>
+          <li><strong>NorMuon</strong> variance reduction: adaptive per-head step size via second-moment buffer</li>
+          <li><strong>Cautious weight decay</strong>: WD masked to params where grad and param share sign</li>
+          <li>LR scaled by √(max(1, rows/cols)) for non-square matrices</li>
+          <li>WD linearly anneals to 0 during training</li>
+        </ul>
+      </div>
+      <div class="opt-card adamw">
+        <h4>AdamW — Embeddings &amp; Scalars</h4>
+        <ul>
+          <li>lm_head (unembedding) — lr = <code style="font-family:var(--mono)">UNEMBEDDING_LR × scale</code></li>
+          <li>wte (token embedding) — lr = <code style="font-family:var(--mono)">EMBEDDING_LR × scale</code></li>
+          <li>value_embeds — lr = <code style="font-family:var(--mono)">EMBEDDING_LR × scale</code></li>
+          <li>resid_lambdas — lr = <code style="font-family:var(--mono)">SCALAR_LR × 0.01</code></li>
+          <li>x0_lambdas — lr = <code style="font-family:var(--mono)">SCALAR_LR</code>, β₁=0.96</li>
+          <li>No weight decay on any AdamW group</li>
+          <li>All steps fused via <code style="font-family:var(--mono)">@torch.compile(fullgraph=True)</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3 style="margin-bottom:10px;">LR Scaling Rule</h3>
+      <p style="font-size:.9rem;color:var(--muted)">
+        All AdamW learning rates are multiplied by
+        <code style="font-family:var(--mono);color:var(--accent)">1 / √(n_embd / 768)</code>
+        so that the tuned defaults generalise across model sizes (baseline tuned at 768 embedding dim).
+      </p>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── HYPERPARAMETERS ─────────────────────── -->
+  <div class="section" id="hyperparams">
+    <div class="section-header">
+      <div class="section-icon icon-gold">🎛️</div>
+      <h2>Hyperparameters (Agent-Modifiable)</h2>
+    </div>
+
+    <div class="hp-grid">
+      <div class="hp-item">
+        <div class="hp-name">DEPTH</div>
+        <div class="hp-val">8</div>
+        <div class="hp-desc">Number of transformer layers. Primary complexity knob.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">ASPECT_RATIO</div>
+        <div class="hp-val">64</div>
+        <div class="hp-desc">model_dim = DEPTH × ASPECT_RATIO, rounded up to nearest HEAD_DIM.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">HEAD_DIM</div>
+        <div class="hp-val">128</div>
+        <div class="hp-desc">Target attention head dimension. Derived: n_head = n_embd / HEAD_DIM.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">WINDOW_PATTERN</div>
+        <div class="hp-val">"SSSL"</div>
+        <div class="hp-desc">Per-layer attention window pattern. L = full context, S = half context. Cycles over layers; last always L.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">TOTAL_BATCH_SIZE</div>
+        <div class="hp-val">2¹⁹ = 524 288</div>
+        <div class="hp-desc">Tokens per optimizer step (across gradient accumulation micro-steps).</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">DEVICE_BATCH_SIZE</div>
+        <div class="hp-val">128</div>
+        <div class="hp-desc">Sequences per micro-step. Reduce if OOM.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">EMBEDDING_LR</div>
+        <div class="hp-val">0.6</div>
+        <div class="hp-desc">AdamW LR for wte and value embeddings.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">UNEMBEDDING_LR</div>
+        <div class="hp-val">0.004</div>
+        <div class="hp-desc">AdamW LR for lm_head.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">MATRIX_LR</div>
+        <div class="hp-val">0.04</div>
+        <div class="hp-desc">Muon LR for 2D attention and MLP weight matrices.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">SCALAR_LR</div>
+        <div class="hp-val">0.5</div>
+        <div class="hp-desc">AdamW LR for per-layer scalar parameters (resid_lambdas, x0_lambdas).</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">WEIGHT_DECAY</div>
+        <div class="hp-val">0.2</div>
+        <div class="hp-desc">Cautious WD for Muon. Linearly annealed to 0 over training duration.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">ADAM_BETAS</div>
+        <div class="hp-val">(0.8, 0.95)</div>
+        <div class="hp-desc">Adam β₁ and β₂ for all AdamW groups.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">WARMUP_RATIO</div>
+        <div class="hp-val">0.0</div>
+        <div class="hp-desc">Fraction of TIME_BUDGET spent on linear LR warm-up.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">WARMDOWN_RATIO</div>
+        <div class="hp-val">0.5</div>
+        <div class="hp-desc">Fraction of TIME_BUDGET spent on linear LR cool-down.</div>
+      </div>
+      <div class="hp-item">
+        <div class="hp-name">FINAL_LR_FRAC</div>
+        <div class="hp-val">0.0</div>
+        <div class="hp-desc">Final LR as fraction of peak LR at end of cool-down.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── FIXED CONSTANTS ─────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-gold">🔒</div>
+      <h2>Fixed Constants (prepare.py — Do Not Modify)</h2>
+    </div>
+    <div class="const-row">
+      <div class="const-pill"><span class="cname">MAX_SEQ_LEN</span><span class="cval">2 048 tokens</span></div>
+      <div class="const-pill"><span class="cname">TIME_BUDGET</span><span class="cval">300 s</span></div>
+      <div class="const-pill"><span class="cname">EVAL_TOKENS</span><span class="cval">40 × 524 288</span></div>
+      <div class="const-pill"><span class="cname">VOCAB_SIZE</span><span class="cval">8 192</span></div>
+      <div class="const-pill"><span class="cname">VAL_SHARD</span><span class="cval">06542 (pinned)</span></div>
+      <div class="const-pill"><span class="cname">BOS_TOKEN</span><span class="cval">&lt;|reserved_0|&gt;</span></div>
+    </div>
+    <div style="margin-top:14px;">
+      <div class="card">
+        <h3>val_bpb Evaluation Metric</h3>
+        <p style="margin-top:8px;">
+          <code style="font-family:var(--mono);color:var(--accent);font-size:.95rem;">
+            val_bpb = Σ(per-token cross-entropy nats) / (ln(2) × Σ(target byte lengths))
+          </code>
+        </p>
+        <ul style="margin-top:12px;">
+          <li>Lower is better.</li>
+          <li>Special tokens (byte_length = 0) are excluded from both sums.</li>
+          <li>Uses fixed MAX_SEQ_LEN and VAL_SHARD so results are reproducible and comparable.</li>
+          <li>Vocab-size independent — architectural changes with different vocab sizes are fairly compared.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── MODULE BROWSER ─────────────────────── -->
+  <div class="section" id="modules">
+    <div class="section-header">
+      <div class="section-icon icon-green">📦</div>
+      <h2>Module Browser</h2>
+    </div>
+
+    <div class="file-tabs">
+      <div class="file-tab active" onclick="switchTab('prepare')">prepare.py</div>
+      <div class="file-tab" onclick="switchTab('train')">train.py</div>
+      <div class="file-tab" onclick="switchTab('program')">program.md</div>
+    </div>
+
+    <!-- prepare.py -->
+    <div class="file-content active" id="tab-prepare">
+      <p style="color:var(--muted);font-size:.88rem;margin-bottom:16px;">One-time data prep and shared runtime utilities. <strong style="color:#f87171">Never modified by the agent.</strong></p>
+      <table class="fn-table">
+        <thead><tr><th>Symbol</th><th>Kind</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="fn-name">download_single_shard(index)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Download one parquet shard with 5 retries and exponential back-off.</td></tr>
+          <tr><td class="fn-name">download_data(num_shards, workers)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Parallel multiprocess download of training + validation shards.</td></tr>
+          <tr><td class="fn-name">list_parquet_files()</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Return sorted list of parquet paths in DATA_DIR.</td></tr>
+          <tr><td class="fn-name">text_iterator(max_chars, doc_cap)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Yield training documents up to max_chars total characters.</td></tr>
+          <tr><td class="fn-name">train_tokenizer()</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Train BPE tokenizer with rustbpe → save tiktoken pickle + token_bytes.pt.</td></tr>
+          <tr><td class="fn-name">get_token_bytes(device)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Load token→byte-length tensor used by BPB evaluation.</td></tr>
+          <tr><td class="fn-name">_document_batches(split)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Infinite iterator over document batches from parquet split.</td></tr>
+          <tr><td class="fn-name">make_dataloader(tok, B, T, split)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">BOS-aligned best-fit-packed dataloader. 100% utilisation, no padding. Pre-loads to CUDA.</td></tr>
+          <tr><td class="fn-name">evaluate_bpb(model, tok, bs)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Compute bits-per-byte on pinned val shard (fixed eval set). @torch.no_grad.</td></tr>
+          <tr><td class="fn-name">Tokenizer</td><td style="color:var(--accent2);font-size:.8rem;">class</td><td class="fn-desc">Thin wrapper around tiktoken Encoding. Methods: from_directory, encode, decode, get_vocab_size, get_bos_token_id.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- train.py -->
+    <div class="file-content" id="tab-train">
+      <p style="color:var(--muted);font-size:.88rem;margin-bottom:16px;">Full training pipeline. <strong style="color:var(--accent3)">This is the file the agent edits.</strong></p>
+      <table class="fn-table">
+        <thead><tr><th>Symbol</th><th>Kind</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td class="fn-name">GPTConfig</td><td style="color:var(--accent2);font-size:.8rem;">dataclass</td><td class="fn-desc">Model configuration: sequence_len, vocab_size, n_layer, n_head, n_kv_head, n_embd, window_pattern.</td></tr>
+          <tr><td class="fn-name">norm(x)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">RMS norm helper: F.rms_norm(x, (x.size(-1),)).</td></tr>
+          <tr><td class="fn-name">has_ve(layer_idx, n_layer)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Returns True if layer should have a Value Embedding (alternating; last always included).</td></tr>
+          <tr><td class="fn-name">apply_rotary_emb(x, cos, sin)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Apply Rotary Position Embeddings to a 4D tensor.</td></tr>
+          <tr><td class="fn-name">CausalSelfAttention</td><td style="color:var(--accent2);font-size:.8rem;">class</td><td class="fn-desc">Multi-head causal self-attention with optional VE, RoPE, QK-norm, Flash Attention 3.</td></tr>
+          <tr><td class="fn-name">MLP</td><td style="color:var(--accent2);font-size:.8rem;">class</td><td class="fn-desc">Two-layer feedforward: fc → relu² → proj. Expansion factor ×4.</td></tr>
+          <tr><td class="fn-name">Block</td><td style="color:var(--accent2);font-size:.8rem;">class</td><td class="fn-desc">Transformer block: pre-norm residual attention + pre-norm residual MLP.</td></tr>
+          <tr><td class="fn-name">GPT</td><td style="color:var(--accent2);font-size:.8rem;">class</td><td class="fn-desc">Full GPT model: embeddings, N blocks, value_embeds, RoPE buffers, per-layer scalars, softcap head.</td></tr>
+          <tr><td class="fn-name">adamw_step_fused</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">@torch.compile fused AdamW kernel: WD decoupling, EMA, bias-corrected update.</td></tr>
+          <tr><td class="fn-name">muon_step_fused</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">@torch.compile fused Muon kernel: momentum → Polar Express → NorMuon → cautious WD → update.</td></tr>
+          <tr><td class="fn-name">MuonAdamW</td><td style="color:var(--accent2);font-size:.8rem;">class</td><td class="fn-desc">Hybrid optimizer: Muon for 2D matrices, AdamW for embeddings and scalars.</td></tr>
+          <tr><td class="fn-name">build_model_config(depth)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Create GPTConfig from DEPTH, ASPECT_RATIO, HEAD_DIM, WINDOW_PATTERN.</td></tr>
+          <tr><td class="fn-name">get_lr_multiplier(progress)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">LR schedule: warm-up → flat → cool-down based on elapsed fraction of TIME_BUDGET.</td></tr>
+          <tr><td class="fn-name">get_muon_momentum(step)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Ramp Muon momentum from 0.85 to 0.95 over first 300 steps.</td></tr>
+          <tr><td class="fn-name">get_weight_decay(progress)</td><td style="color:var(--warn);font-size:.8rem;">fn</td><td class="fn-desc">Linearly anneal weight decay from WEIGHT_DECAY → 0 over training.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- program.md -->
+    <div class="file-content" id="tab-program">
+      <p style="color:var(--muted);font-size:.88rem;margin-bottom:16px;">Agent protocol and research strategy. <strong style="color:var(--accent)">Edited by the human.</strong></p>
+      <div class="card-grid">
+        <div class="card">
+          <h3>Setup Phase (run once)</h3>
+          <ul>
+            <li>Create a new git branch for the experiment run</li>
+            <li>Read and understand prepare.py and train.py</li>
+            <li>Read results.tsv history if it exists</li>
+            <li>Create results.tsv with header if needed</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>results.tsv Format</h3>
+          <ul>
+            <li><code style="font-family:var(--mono);font-size:.8rem;">commit</code> — short git hash</li>
+            <li><code style="font-family:var(--mono);font-size:.8rem;">val_bpb</code> — evaluation metric</li>
+            <li><code style="font-family:var(--mono);font-size:.8rem;">memory_gb</code> — peak VRAM usage</li>
+            <li><code style="font-family:var(--mono);font-size:.8rem;">status</code> — "keep" or "revert"</li>
+            <li><code style="font-family:var(--mono);font-size:.8rem;">description</code> — what changed</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Constraints</h3>
+          <ul>
+            <li>Never modify prepare.py</li>
+            <li>Never install new packages</li>
+            <li>Each run ≤ ~10 min total wall time</li>
+            <li>Prefer simplicity over marginal gains</li>
+            <li>Never pause to ask human to continue</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Crash / Timeout Handling</h3>
+          <ul>
+            <li>Fast-fail: if train_loss > 100 → exit(1)</li>
+            <li>OOM: reduce DEVICE_BATCH_SIZE and retry</li>
+            <li>Timeout: treat as failed, git reset</li>
+            <li>Missing output line: treat as failed</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── DEPENDENCIES ─────────────────────── -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-icon icon-green">📦</div>
+      <h2>Dependencies (pyproject.toml)</h2>
+    </div>
+    <div class="card-grid">
+      <div class="card">
+        <h3>torch 2.9.1</h3>
+        <p>PyTorch with CUDA 12.8 build (pytorch-cu128 index). Core deep learning framework.</p>
+      </div>
+      <div class="card">
+        <h3>kernels ≥ 0.11.7</h3>
+        <p>Flash Attention 3 kernels. Uses varunneal/FA3 on H100 (Hopper), kernels-community/flash-attn3 on other NVIDIA GPUs.</p>
+      </div>
+      <div class="card">
+        <h3>rustbpe ≥ 0.1.0</h3>
+        <p>High-performance BPE tokenizer training in Rust. Used in the one-time tokenizer training step.</p>
+      </div>
+      <div class="card">
+        <h3>tiktoken ≥ 0.11.0</h3>
+        <p>OpenAI's tokenizer library. Used for encoding/decoding at runtime.</p>
+      </div>
+      <div class="card">
+        <h3>pyarrow ≥ 21.0.0</h3>
+        <p>Parquet file I/O for reading dataset shards from the Hugging Face dataset.</p>
+      </div>
+      <div class="card">
+        <h3>requests ≥ 2.32.0</h3>
+        <p>HTTP client for downloading dataset shards from Hugging Face.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── JSON INDEX ─────────────────────── -->
+  <div class="section" id="json">
+    <div class="section-header">
+      <div class="section-icon icon-cyan">{ }</div>
+      <h2>Raw JSON Index</h2>
+    </div>
+    <p style="color:var(--muted);font-size:.88rem;margin-bottom:14px;">
+      The full machine-readable architecture index is also available as
+      <code style="font-family:var(--mono);color:var(--accent)">index.json</code> in the repository root.
+    </p>
+    <div class="json-toggle" onclick="toggleJson()">
+      <span id="json-toggle-icon">▶</span> Show / Hide index.json
+    </div>
+    <div class="json-block" id="json-block">
+      <pre id="json-pre">Loading…</pre>
+    </div>
+  </div>
+
+  <!-- ─────────────────────── FOOTER ─────────────────────── -->
+  <footer>
+    <p>AutoResearch &nbsp;·&nbsp; MIT License &nbsp;·&nbsp;
+      <a href="https://github.com/groxaxo/autoresearch" target="_blank" rel="noopener">GitHub</a>
+      &nbsp;·&nbsp; Inspired by <a href="https://x.com/karpathy" target="_blank" rel="noopener">@karpathy</a>
+    </p>
+  </footer>
+</div>
+
+<script>
+/* ── Tab switcher ── */
+function switchTab(name) {
+  document.querySelectorAll('.file-tab').forEach((t, i) => {
+    t.classList.toggle('active', ['prepare','train','program'][i] === name);
+  });
+  document.querySelectorAll('.file-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+/* ── JSON viewer ── */
+var jsonLoaded = false;
+function toggleJson() {
+  var block = document.getElementById('json-block');
+  var icon  = document.getElementById('json-toggle-icon');
+  var isOpen = block.classList.toggle('open');
+  icon.textContent = isOpen ? '▼' : '▶';
+  if (isOpen && !jsonLoaded) {
+    loadJson();
+  }
+}
+
+function syntaxHighlight(json) {
+  json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return json.replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    function(match) {
+      var cls = 'jn';
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) cls = 'jk';
+        else cls = 'js';
+      } else if (/true|false|null/.test(match)) {
+        cls = 'jb';
+      }
+      return '<span class="' + cls + '">' + match + '</span>';
+    }
+  );
+}
+
+function loadJson() {
+  fetch('index.json')
+    .then(function(r) { return r.text(); })
+    .then(function(text) {
+      var pretty = JSON.stringify(JSON.parse(text), null, 2);
+      document.getElementById('json-pre').innerHTML = syntaxHighlight(pretty);
+      jsonLoaded = true;
+    })
+    .catch(function() {
+      /* Fallback if fetch is blocked (e.g. file:// protocol) */
+      document.getElementById('json-pre').textContent =
+        'Open index.html from a web server (or use VS Code Live Server) to fetch index.json.\n' +
+        'Alternatively, open index.json directly in your editor.';
+    });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,395 @@
+{
+  "project": {
+    "name": "autoresearch",
+    "version": "0.1.0",
+    "description": "Autonomous AI research platform: an LLM agent that runs ML experiments overnight, modifying a single training file, training for 5 minutes per run, and keeping only improvements.",
+    "license": "MIT",
+    "python_version": ">=3.10",
+    "entry_points": {
+      "prepare": "uv run prepare.py",
+      "train": "uv run train.py"
+    },
+    "repository": "https://github.com/groxaxo/autoresearch"
+  },
+  "architecture_overview": {
+    "paradigm": "Single-GPU autonomous ML experimentation loop",
+    "key_design_principles": [
+      "Single file for agent to modify (train.py)",
+      "Fixed 5-minute wall-clock time budget per experiment",
+      "Vocab-size-independent evaluation metric (val_bpb — bits per byte)",
+      "Self-contained: no distributed training, one GPU, one metric",
+      "Agent never pauses to ask the human for input"
+    ],
+    "data_flow": [
+      "Parquet shards (Hugging Face) → download_data()",
+      "Raw text → train_tokenizer() → BPE tokenizer (tiktoken)",
+      "Tokenizer + parquet → make_dataloader() → (inputs, targets) batches",
+      "Batches → GPT.forward() → cross-entropy loss",
+      "Loss → MuonAdamW.step() → updated weights",
+      "Final weights → evaluate_bpb() → val_bpb metric",
+      "val_bpb compared to baseline → keep or revert commit"
+    ],
+    "experiment_loop": [
+      "Read current git state of train.py",
+      "Apply one modification (architecture, hyperparams, optimizer, etc.)",
+      "Commit change",
+      "Run: uv run train.py > run.log 2>&1",
+      "Extract val_bpb and peak_vram_mb from output",
+      "Record result to results.tsv",
+      "If improved: keep commit; else: git reset"
+    ]
+  },
+  "files": {
+    "prepare.py": {
+      "purpose": "One-time data preparation and shared runtime utilities. Never modified by the agent.",
+      "lines": 389,
+      "constants": {
+        "MAX_SEQ_LEN": { "value": 2048, "description": "Context length in tokens" },
+        "TIME_BUDGET": { "value": 300, "description": "Training time budget in seconds (5 minutes)" },
+        "EVAL_TOKENS": { "value": 20971520, "expression": "40 * 524288", "description": "Total tokens used for validation evaluation" },
+        "VOCAB_SIZE": { "value": 8192, "description": "BPE tokenizer vocabulary size" },
+        "VAL_SHARD": { "value": 6542, "description": "Pinned validation parquet shard index" },
+        "MAX_SHARD": { "value": 6542, "description": "Last available data shard index" },
+        "SPLIT_PATTERN": { "value": "GPT-4 style BPE regex", "description": "Token split pattern with \\p{N}{1,2} instead of {1,3}" },
+        "BOS_TOKEN": { "value": "<|reserved_0|>", "description": "Beginning-of-sequence special token" },
+        "CACHE_DIR": { "value": "~/.cache/autoresearch", "description": "Base cache directory for data and tokenizer" }
+      },
+      "functions": {
+        "download_single_shard": {
+          "signature": "download_single_shard(index: int) -> bool",
+          "description": "Download one parquet shard from Hugging Face with up to 5 retry attempts and exponential back-off.",
+          "parameters": { "index": "shard integer index (zero-padded to 5 digits in filename)" },
+          "returns": "True on success, False on all retries failed"
+        },
+        "download_data": {
+          "signature": "download_data(num_shards: int, download_workers: int = 8)",
+          "description": "Download the requested number of training shards plus the pinned validation shard using a multiprocessing pool.",
+          "parameters": {
+            "num_shards": "number of training shards to download",
+            "download_workers": "parallel download workers (default 8)"
+          }
+        },
+        "list_parquet_files": {
+          "signature": "list_parquet_files() -> list[str]",
+          "description": "Return sorted list of parquet file paths found in DATA_DIR."
+        },
+        "text_iterator": {
+          "signature": "text_iterator(max_chars: int = 1_000_000_000, doc_cap: int = 10_000) -> Iterator[str]",
+          "description": "Yield documents from training parquet shards (excludes pinned val shard) up to max_chars total characters."
+        },
+        "train_tokenizer": {
+          "signature": "train_tokenizer()",
+          "description": "Train a BPE tokenizer using rustbpe on training corpus, then build tiktoken Encoding. Saves tokenizer.pkl and token_bytes.pt. Also runs a roundtrip sanity check.",
+          "outputs": ["~/.cache/autoresearch/tokenizer/tokenizer.pkl", "~/.cache/autoresearch/tokenizer/token_bytes.pt"]
+        },
+        "get_token_bytes": {
+          "signature": "get_token_bytes(device: str = 'cpu') -> torch.Tensor",
+          "description": "Load and return the token→byte-length lookup tensor used by BPB evaluation."
+        },
+        "_document_batches": {
+          "signature": "_document_batches(split: str, tokenizer_batch_size: int = 128) -> Iterator[tuple[list[str], int]]",
+          "description": "Infinite iterator over batches of raw documents from the correct parquet split. Yields (doc_batch, epoch)."
+        },
+        "make_dataloader": {
+          "signature": "make_dataloader(tokenizer: Tokenizer, B: int, T: int, split: str, buffer_size: int = 1000) -> Iterator[tuple[Tensor, Tensor, int]]",
+          "description": "BOS-aligned dataloader with best-fit document packing. Every row starts with BOS. Uses best-fit bin-packing to achieve 100% token utilisation (no padding). Falls back to cropping the shortest buffered document when no document fits remaining space. Yields (inputs, targets, epoch) with data pre-loaded onto CUDA.",
+          "parameters": {
+            "B": "batch size (number of rows)",
+            "T": "sequence length (MAX_SEQ_LEN)",
+            "split": "\"train\" or \"val\"",
+            "buffer_size": "minimum number of tokenised documents to buffer"
+          }
+        },
+        "evaluate_bpb": {
+          "signature": "@torch.no_grad() evaluate_bpb(model, tokenizer, batch_size: int) -> float",
+          "description": "Compute bits-per-byte on the pinned validation shard. Sums per-token cross-entropy (nats) and total byte lengths, then converts: bpb = total_nats / (ln(2) * total_bytes). Special tokens (byte_length = 0) are excluded from both sums. Uses fixed MAX_SEQ_LEN so results are comparable across configs.",
+          "metric": "val_bpb — lower is better"
+        }
+      },
+      "classes": {
+        "Tokenizer": {
+          "description": "Minimal wrapper around a tiktoken Encoding object.",
+          "constructor": "__init__(enc: tiktoken.Encoding)",
+          "class_methods": {
+            "from_directory": "cls.from_directory(tokenizer_dir) — load pickled encoding from disk"
+          },
+          "instance_methods": {
+            "get_vocab_size": "Returns enc.n_vocab",
+            "get_bos_token_id": "Returns integer id of the BOS special token",
+            "encode": "Encode a string or list of strings with optional BOS prepend (multi-threaded for lists)",
+            "decode": "Decode list of token ids back to string"
+          }
+        }
+      }
+    },
+    "train.py": {
+      "purpose": "Full training pipeline: GPT model definition, hybrid optimizer, hyperparameters, and training loop. This is the single file that the agent modifies between experiments.",
+      "lines": 629,
+      "imports_from_prepare": ["MAX_SEQ_LEN", "TIME_BUDGET", "Tokenizer", "make_dataloader", "evaluate_bpb"],
+      "model": {
+        "name": "GPT",
+        "description": "Decoder-only transformer language model with sliding-window attention, rotary embeddings, value residuals, per-layer scaling, and logit soft-capping.",
+        "config_dataclass": {
+          "name": "GPTConfig",
+          "fields": {
+            "sequence_len": { "default": 2048, "description": "Input context length" },
+            "vocab_size": { "default": 32768, "description": "Vocabulary size (set from tokenizer)" },
+            "n_layer": { "default": 12, "description": "Number of transformer blocks" },
+            "n_head": { "default": 6, "description": "Number of query attention heads" },
+            "n_kv_head": { "default": 6, "description": "Number of key/value heads (supports GQA)" },
+            "n_embd": { "default": 768, "description": "Model embedding dimension" },
+            "window_pattern": { "default": "SSSL", "description": "Per-layer attention window pattern: L=full, S=half context. Repeats cyclically; last layer always forced to L." }
+          }
+        },
+        "helper_functions": {
+          "norm": "RMS normalisation: F.rms_norm(x, (x.size(-1),))",
+          "has_ve": "Returns True if layer_idx should have a Value Embedding (alternating, last layer always included)",
+          "apply_rotary_emb": "Split head_dim in half and apply RoPE: y1 = x1·cos + x2·sin, y2 = -x1·sin + x2·cos"
+        },
+        "modules": {
+          "CausalSelfAttention": {
+            "description": "Multi-head causal self-attention with optional Value Embedding (ResFormer-style), RoPE, QK-norm, and Flash Attention 3.",
+            "parameters": ["c_q", "c_k", "c_v (Linear, bias=False)", "c_proj (Linear, bias=False)", "ve_gate (Linear, 32→n_kv_head, on VE layers)"],
+            "forward": {
+              "steps": [
+                "Project x → q (n_head×head_dim), k, v (n_kv_head×head_dim)",
+                "Value residual: if VE layer, compute gate = 2·σ(ve_gate(x[..,:32])), mix v = v + gate·ve",
+                "Apply RoPE to q and k",
+                "QK-norm: norm(q), norm(k)",
+                "Flash Attention 3 (causal, sliding window if S-layer)",
+                "Reshape and project output via c_proj"
+              ]
+            }
+          },
+          "MLP": {
+            "description": "Two-layer feedforward block with squared ReLU activation.",
+            "parameters": ["c_fc (n_embd → 4·n_embd, bias=False)", "c_proj (4·n_embd → n_embd, bias=False)"],
+            "activation": "relu²: F.relu(x).square()",
+            "expansion_factor": 4
+          },
+          "Block": {
+            "description": "Single transformer block: residual attention + residual MLP, both pre-normalised.",
+            "forward": "x = x + attn(norm(x), ...); x = x + mlp(norm(x))"
+          },
+          "GPT": {
+            "description": "Full GPT model with token embeddings, transformer blocks, value embedding table, rotary embedding buffers, per-layer residual scaling, skip-connection mixing, and soft-capped logit head.",
+            "sub_modules": {
+              "transformer.wte": "Token embedding: Embedding(vocab_size, n_embd)",
+              "transformer.h": "ModuleList of n_layer Block objects",
+              "lm_head": "Linear(n_embd, vocab_size, bias=False) — language model head",
+              "resid_lambdas": "Learnable per-layer residual scale (initialised to 1.0)",
+              "x0_lambdas": "Learnable per-layer skip-connection mix weight (initialised to 0.1)",
+              "value_embeds": "ModuleDict of Embedding(vocab_size, kv_dim) for VE layers",
+              "cos / sin": "Pre-computed RoPE buffers (non-persistent, bfloat16)"
+            },
+            "forward_pass": [
+              "x = wte(idx) → norm(x)",
+              "x0 = x  (skip-connection anchor)",
+              "For each block i: x = resid_lambdas[i]·x + x0_lambdas[i]·x0; x = block(x, ve_i, cos_sin, window_size_i)",
+              "x = norm(x)",
+              "logits = lm_head(x).float()",
+              "Soft-cap logits: 15·tanh(logits/15)",
+              "If targets provided: return cross_entropy(logits, targets)"
+            ],
+            "weight_init": {
+              "wte": "Normal(0, 1)",
+              "lm_head": "Normal(0, 0.001)",
+              "c_q, c_k, c_v, c_fc": "Uniform(−s, s) where s = √3 · n_embd^(−0.5)",
+              "c_proj, mlp.c_proj": "Zeros (small output projection)",
+              "ve_gate": "Zeros (sigmoid(0)=0.5 → gate=1.0 is neutral at init)",
+              "resid_lambdas": "1.0",
+              "x0_lambdas": "0.1"
+            },
+            "methods": {
+              "init_weights": "Initialise all parameters as documented above",
+              "_precompute_rotary_embeddings": "Compute cos/sin buffers for RoPE up to rotary_seq_len = sequence_len × 10",
+              "_compute_window_sizes": "Map window_pattern characters to (window_size, 0) tuples; force last layer to L (full context)",
+              "estimate_flops": "Estimate forward+backward FLOPs per token (6·non-embed-params + attention FLOPs)",
+              "num_scaling_params": "Return dict of parameter counts by group",
+              "setup_optimizer": "Create MuonAdamW with per-group LR, scaled by 1/√(n_embd/768)",
+              "forward": "See forward_pass above"
+            }
+          }
+        }
+      },
+      "optimizer": {
+        "name": "MuonAdamW",
+        "description": "Hybrid optimizer: Muon for 2D matrix parameters (attention + MLP weights), AdamW for everything else (embeddings, unembeddings, per-layer scalars). Single-GPU only.",
+        "parameter_groups": {
+          "lm_head": { "kind": "adamw", "lr": "UNEMBEDDING_LR × dmodel_scale" },
+          "wte": { "kind": "adamw", "lr": "EMBEDDING_LR × dmodel_scale" },
+          "value_embeds": { "kind": "adamw", "lr": "EMBEDDING_LR × dmodel_scale" },
+          "resid_lambdas": { "kind": "adamw", "lr": "SCALAR_LR × 0.01" },
+          "x0_lambdas": { "kind": "adamw", "lr": "SCALAR_LR", "betas": "(0.96, 0.95)" },
+          "matrix_params (per shape)": { "kind": "muon", "lr": "MATRIX_LR", "momentum": 0.95, "ns_steps": 5, "beta2": 0.95 }
+        },
+        "lr_scaling": "LR ∝ 1/√(model_dim/768) — tuned at 768 embedding dim",
+        "fused_kernels": {
+          "adamw_step_fused": {
+            "decorator": "@torch.compile(dynamic=False, fullgraph=True)",
+            "description": "Fused AdamW step: weight-decay, EMA update, bias-corrected parameter update — all in one compiled kernel."
+          },
+          "muon_step_fused": {
+            "decorator": "@torch.compile(dynamic=False, fullgraph=True)",
+            "description": "Fused Muon step: Nesterov momentum → Polar Express orthogonalisation → NorMuon variance reduction → cautious weight decay → parameter update.",
+            "polar_express": {
+              "description": "Iterative matrix square-root approximation (5 coefficients), computing the nearest orthogonal matrix of the gradient.",
+              "steps": "ns_steps iterations of X = a·X + X·B (or B·X for tall matrices) where B = b·A + c·A²"
+            },
+            "normuon": "Per-head variance normalisation: adaptive step size via second-moment buffer",
+            "cautious_wd": "Weight decay masked to parameters whose gradient and value have the same sign"
+          }
+        }
+      },
+      "hyperparameters": {
+        "model_architecture": {
+          "DEPTH": { "default": 8, "description": "Number of transformer layers" },
+          "ASPECT_RATIO": { "default": 64, "description": "model_dim = DEPTH × ASPECT_RATIO (rounded up to nearest HEAD_DIM multiple)" },
+          "HEAD_DIM": { "default": 128, "description": "Target attention head dimension" },
+          "WINDOW_PATTERN": { "default": "SSSL", "description": "Attention window pattern per layer block (L=full, S=half context, cycles and last always L)" }
+        },
+        "training": {
+          "TOTAL_BATCH_SIZE": { "default": 524288, "expression": "2**19", "description": "Tokens per optimizer step (across gradient accumulation micro-steps)" },
+          "DEVICE_BATCH_SIZE": { "default": 128, "description": "Sequences per micro-step (reduce if OOM)" },
+          "WARMUP_RATIO": { "default": 0.0, "description": "Fraction of TIME_BUDGET spent on LR linear warm-up" },
+          "WARMDOWN_RATIO": { "default": 0.5, "description": "Fraction of TIME_BUDGET spent on cosine/linear LR cool-down" },
+          "FINAL_LR_FRAC": { "default": 0.0, "description": "Final LR as fraction of peak LR" }
+        },
+        "optimizer_lr": {
+          "EMBEDDING_LR": { "default": 0.6, "description": "Adam LR for wte and value embeddings" },
+          "UNEMBEDDING_LR": { "default": 0.004, "description": "Adam LR for lm_head" },
+          "MATRIX_LR": { "default": 0.04, "description": "Muon LR for attention and MLP weight matrices" },
+          "SCALAR_LR": { "default": 0.5, "description": "Adam LR for per-layer scalar parameters" },
+          "WEIGHT_DECAY": { "default": 0.2, "description": "Cautious weight decay for Muon (linearly annealed to 0 during training)" },
+          "ADAM_BETAS": { "default": [0.8, 0.95], "description": "Adam β₁ and β₂" }
+        }
+      },
+      "training_loop": {
+        "description": "Fixed 5-minute wall-clock training loop with gradient accumulation, dynamic LR scheduling, dynamic Muon momentum, and Python GC freeze.",
+        "setup": [
+          "Set random seeds (torch.manual_seed(42))",
+          "Set float32 matmul precision to 'high'",
+          "Load tokenizer from disk",
+          "Build GPTConfig via build_model_config(DEPTH)",
+          "Instantiate GPT on meta device, move to CUDA, call init_weights()",
+          "Call model.setup_optimizer()",
+          "torch.compile(model, dynamic=False)",
+          "Create train dataloader, prefetch first batch"
+        ],
+        "per_step": [
+          "Accumulate gradients over grad_accum_steps micro-steps with autocast (bfloat16)",
+          "Compute progress = total_training_time / TIME_BUDGET",
+          "Update LR: group['lr'] = initial_lr × get_lr_multiplier(progress)",
+          "Update Muon momentum: 0.85 + 0.10 × min(step/300, 1)",
+          "Update Muon weight decay: WEIGHT_DECAY × (1 − progress)",
+          "optimizer.step(); model.zero_grad(set_to_none=True)",
+          "Fast-fail if train_loss > 100",
+          "Log step, loss (EMA), LR multiplier, tok/s, MFU%, remaining time"
+        ],
+        "gc_management": "Freeze Python GC after step 0 to avoid ~500ms stalls; collect every 5000 steps",
+        "termination": "Break when total_training_time >= TIME_BUDGET (only counted after step 10 to exclude torch.compile warmup)",
+        "evaluation": "After loop: model.eval(); evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)",
+        "outputs": ["val_bpb", "training_seconds", "total_seconds", "peak_vram_mb", "mfu_percent", "total_tokens_M", "num_steps", "num_params_M", "depth"]
+      },
+      "schedules": {
+        "get_lr_multiplier": "Linear warm-up from 0→1 over WARMUP_RATIO, flat at 1 until (1−WARMDOWN_RATIO), linear cool-down to FINAL_LR_FRAC",
+        "get_muon_momentum": "Ramp from 0.85 to 0.95 over first 300 steps",
+        "get_weight_decay": "Linear anneal from WEIGHT_DECAY to 0 over training duration"
+      }
+    },
+    "program.md": {
+      "purpose": "Agent protocol and instructions. Edited by the human to define the research strategy.",
+      "lines": 115,
+      "sections": {
+        "setup_phase": [
+          "Create a new git branch for the experiment run",
+          "Read prepare.py, train.py (understand current state)",
+          "Read results.tsv if it exists (understand experiment history)",
+          "Create results.tsv with header if it doesn't exist"
+        ],
+        "experiment_loop": [
+          "Read current git log and train.py",
+          "Choose one modification to apply",
+          "Apply modification to train.py",
+          "git commit the change",
+          "Run: uv run train.py > run.log 2>&1",
+          "Extract val_bpb and peak_vram_mb from run.log",
+          "Append result row to results.tsv",
+          "If val_bpb improved: keep commit; else: git reset --hard HEAD~1",
+          "Repeat"
+        ],
+        "results_tsv_format": {
+          "columns": ["commit", "val_bpb", "memory_gb", "status", "description"],
+          "example": "a1b2c3d\t0.997900\t44.0\tkeep\tbaseline"
+        },
+        "constraints": [
+          "Never modify prepare.py",
+          "Never install new packages",
+          "Keep each run under ~10 minutes total wall time",
+          "Prioritise simplicity — only keep changes that clearly improve performance",
+          "Never pause to ask the human to continue"
+        ]
+      }
+    },
+    "pyproject.toml": {
+      "purpose": "Project dependencies managed by uv.",
+      "dependencies": {
+        "torch": { "version": "2.9.1", "index": "pytorch-cu128", "description": "Deep learning framework (CUDA 12.8 build)" },
+        "kernels": { "version": ">=0.11.7", "description": "Flash Attention 3 operator kernels (varunneal/FA3 for Hopper, kernels-community/flash-attn3 for others)" },
+        "numpy": { "version": ">=2.2.6", "description": "Numerical utilities" },
+        "pandas": { "version": ">=2.3.3", "description": "Data utilities" },
+        "pyarrow": { "version": ">=21.0.0", "description": "Parquet file I/O for dataset shards" },
+        "requests": { "version": ">=2.32.0", "description": "HTTP downloads of dataset shards" },
+        "rustbpe": { "version": ">=0.1.0", "description": "Fast BPE tokenizer training (Rust)" },
+        "tiktoken": { "version": ">=0.11.0", "description": "Tokenizer encoding and decoding backend" },
+        "matplotlib": { "version": ">=3.10.8", "description": "Optional visualisation" }
+      }
+    }
+  },
+  "key_technical_details": {
+    "attention": {
+      "type": "Multi-head causal self-attention with optional grouped-query attention (GQA)",
+      "kernel": "Flash Attention 3 (varunneal/FA3 on Hopper H100; kernels-community/flash-attn3 on other NVIDIA GPUs)",
+      "positional_encoding": "Rotary Position Embeddings (RoPE) — base 10000, pre-computed up to sequence_len×10",
+      "normalization": "QK-norm (RMS norm on Q and K before attention)",
+      "sliding_window": "Pattern-driven: S-layers use window = sequence_len/2, L-layers use full sequence_len. Last layer always full."
+    },
+    "value_residual": {
+      "name": "ResFormer-style Value Embedding (VE)",
+      "description": "Alternating layers have a second per-token value embedding. The input-dependent gate (32-channel linear → sigmoid × 2) mixes the standard value projection with this embedding.",
+      "formula": "v = c_v(x) + gate(x[..,:32]) · ve(idx)"
+    },
+    "normalization": {
+      "type": "RMS Norm",
+      "applied_at": ["Input to attention (pre-norm)", "Input to MLP (pre-norm)", "Final hidden state before lm_head"]
+    },
+    "logit_softcap": {
+      "description": "Logits are soft-capped to ±15 via 15·tanh(logits/15) to prevent training instability.",
+      "value": 15
+    },
+    "memory_efficiency": {
+      "pre_allocated_buffers": "row_buffer (CPU), cpu_buffer (pinned), gpu_buffer (CUDA) pre-allocated in make_dataloader",
+      "async_transfer": "cpu→gpu via non-blocking copy",
+      "expandable_segments": "PYTORCH_ALLOC_CONF=expandable_segments:True",
+      "gc_freeze": "gc.collect(); gc.freeze(); gc.disable() after step 0 to eliminate GC stalls",
+      "bfloat16": "autocast(dtype=torch.bfloat16) for forward/backward; embeddings stored in bfloat16"
+    },
+    "compilation": "torch.compile(model, dynamic=False) — whole-graph compilation for maximum throughput",
+    "evaluation_metric": {
+      "name": "val_bpb",
+      "formula": "total_nats / (ln(2) × total_bytes)",
+      "properties": [
+        "Vocab-size independent (normalised by byte length, not token count)",
+        "Special tokens excluded from both numerator and denominator",
+        "Fixed evaluation set (VAL_SHARD = 6542) for reproducibility",
+        "Lower is better"
+      ]
+    },
+    "dataset": {
+      "name": "climbmix-400b-shuffle",
+      "source": "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle",
+      "format": "Parquet shards (~6542 shards)",
+      "val_shard": "shard_06542.parquet (pinned)"
+    }
+  }
+}
