@@ -2,7 +2,53 @@
 
 This is an experiment to have the LLM do its own research.
 
-## Setup
+This project supports **two modes**: from-scratch pretraining (H100) and Qwen 3.5 LoRA fine-tuning (RTX 3090 / low-VRAM GPUs).
+
+---
+
+## Mode A — Qwen 3.5 fine-tuning (RTX 3090 / ≤ 24 GB)
+
+You are optimizing Qwen3.5-4B with a constrained LoRA SFT loop.
+
+### Rules
+
+- You may only propose changes inside the allowed search space (`search_space.yaml`).
+- Do not modify eval logic, heldout data, tokenizer, scoring weights, or acceptance criteria.
+- Favor stable, incremental mutations over drastic jumps.
+- Prefer experiments that improve composite score, not just train loss.
+- Avoid configs likely to OOM on a single RTX 3090 24 GB.
+- If the last run diverged, reduce aggressiveness.
+- If format adherence dropped, prioritize prompt/template and dataset-mix corrections.
+- If loss improved but judge score worsened, reduce overfitting pressure.
+
+### Goal
+
+Maximize composite score under a fixed experiment budget.
+
+### Allowed levers
+
+- `learning_rate`
+- `lora.r`, `lora.alpha`, `lora.dropout`
+- `max_seq_length`
+- `per_device_train_batch_size`
+- `gradient_accumulation_steps`
+- `packing`
+- `dataset_mix_name`, `reasoning_ratio`
+- `warmup_ratio`, `weight_decay`
+- `lora.target_modules_set`
+
+### Running
+
+```bash
+python run_loop.py          # single iteration
+bash run_many.sh 20         # 20 iterations unattended
+```
+
+---
+
+## Mode B — from-scratch pretraining (H100)
+
+### Setup
 
 To set up a new experiment, work with the user to:
 
@@ -18,7 +64,7 @@ To set up a new experiment, work with the user to:
 
 Once you get confirmation, kick off the experimentation.
 
-## Experimentation
+### Experimentation
 
 Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
 
@@ -38,7 +84,7 @@ Each experiment runs on a single GPU. The training script runs for a **fixed tim
 
 **The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
 
-## Output format
+### Output format
 
 Once the script finishes it prints a summary like this:
 
@@ -61,7 +107,7 @@ Note that the script is configured to always stop after 5 minutes, so depending 
 grep "^val_bpb:" run.log
 ```
 
-## Logging results
+### Logging results
 
 When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
 
@@ -87,7 +133,7 @@ c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
 d4e5f6g	0.000000	0.0	crash	double model width (OOM)
 ```
 
-## The experiment loop
+### The experiment loop
 
 The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
 

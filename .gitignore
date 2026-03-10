@@ -21,3 +21,8 @@ dev/
 
 # Results file
 results.tsv
+
+# Qwen fine-tuning artefacts
+adapters/
+*.safetensors
+*.bin

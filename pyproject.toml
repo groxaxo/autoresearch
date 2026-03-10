@@ -1,19 +1,36 @@
 [project]
 name = "autoresearch"
-version = "0.1.0"
-description = "Autonomous pretraining research swarm"
+version = "0.2.0"
+description = "Autonomous AI research – from-scratch pretraining (H100) and Qwen 3.5 LoRA fine-tuning (RTX 3090 / low-VRAM)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "numpy>=2.2.6",
+    "pyyaml>=6.0.2",
+    "torch==2.9.1",
+]
+
+[project.optional-dependencies]
+# From-scratch pretraining on H100 (original autoresearch)
+pretrain = [
     "kernels>=0.11.7",
     "matplotlib>=3.10.8",
-    "numpy>=2.2.6",
     "pandas>=2.3.3",
     "pyarrow>=21.0.0",
     "requests>=2.32.0",
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",
-    "torch==2.9.1",
+]
+# Qwen 3.5 LoRA fine-tuning on RTX 3090 / low-VRAM GPUs
+finetune = [
+    "datasets>=3.0.0",
+    "peft>=0.17.0",
+    "trl>=0.21.0",
+    "accelerate>=1.10.0",
+    "safetensors>=0.5.0",
+    "sentencepiece>=0.2.0",
+    "protobuf>=5.28.0",
+    "pillow>=10.4.0",
 ]
 
 [tool.uv.sources]
