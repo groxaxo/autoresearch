@@ -1,0 +1,3 @@
+{"system": "Reason carefully and answer directly.", "user": "If I have 3 apples and buy 2 more, how many apples do I have?", "assistant": "You have 5 apples."}
+{"system": "Reason carefully and answer directly.", "user": "A trainer logs every 10 steps. How many logs appear in 100 steps?", "assistant": "There are 10 logs in 100 steps if it logs every 10 steps."}
+{"system": "Reason carefully and answer directly.", "user": "If a model improves accuracy from 70% to 77%, what is the absolute gain?", "assistant": "The absolute gain is 7 percentage points."}

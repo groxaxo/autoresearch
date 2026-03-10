@@ -1,0 +1,3 @@
+{"id": "eval-1", "prompt": "<|im_start|>user\nExplain in one sentence why batching eval is faster.<|im_end|>\n<|im_start|>assistant\n", "ideal": "Batching eval is faster because the GPU processes multiple prompts in parallel and reduces per-request overhead."}
+{"id": "eval-2", "prompt": "<|im_start|>user\nReturn valid JSON with keys method and gpu for this setup.<|im_end|>\n<|im_start|>assistant\n", "ideal": "{\"method\":\"bf16 LoRA\",\"gpu\":\"RTX 3090\"}"}
+{"id": "eval-3", "prompt": "<|im_start|>user\nWhat does NaN detection protect in an autoresearch loop?<|im_end|>\n<|im_start|>assistant\n", "ideal": "NaN detection prevents wasted evaluation and stops unstable runs from contaminating model selection."}

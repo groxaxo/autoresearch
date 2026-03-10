@@ -1,0 +1,43 @@
+run_name: base_seed
+search_phase: 1
+
+model_name: Qwen/Qwen3.5-4B
+output_dir: adapters/base_seed
+
+max_seq_length: 2048
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 8
+
+learning_rate: 2.0e-4
+warmup_ratio: 0.05
+weight_decay: 0.01
+
+num_train_epochs: 1
+max_steps: null
+target_train_rows: 12000
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules_set: qkv_omlp
+
+packing: true
+reasoning_ratio: 0.3
+dataset_mix_name: default
+
+seed: 42
+
+budget:
+  target_train_minutes: 15
+  exclude_startup_from_budget: true
+
+scoring:
+  weights:
+    judge_score: 0.45
+    format_score: 0.25
+    val_loss_score: 0.20
+    stability_score: 0.10
+    latency_penalty: -0.10
+    failure_penalty: -0.10
+  acceptance_margin: 0.005

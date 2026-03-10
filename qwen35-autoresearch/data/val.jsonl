@@ -1,0 +1,2 @@
+{"system": "You are a concise assistant.", "user": "What does left padding help with in decoder-only batched generation?", "assistant": "Left padding keeps the newest tokens aligned so generation continues from real prompt tokens instead of pad positions."}
+{"system": "You are a concise assistant.", "user": "Why is bf16 LoRA preferred over 4-bit QLoRA for Qwen3.5 in Unsloth?", "assistant": "Because Unsloth warns Qwen3.5 has higher-than-normal quantization differences, so bf16 LoRA is the safer fine-tuning path."}

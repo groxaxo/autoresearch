@@ -1,0 +1,12 @@
+# Install unsloth and unsloth_zoo first so their dependency pins land correctly.
+datasets>=3.0.0
+peft>=0.17.0
+trl>=0.21.0
+accelerate>=1.10.0
+pyyaml>=6.0.2
+numpy>=2.0.0
+safetensors>=0.5.0
+sentencepiece>=0.2.0
+protobuf>=5.28.0
+pillow>=10.4.0
+torchvision>=0.20.0
