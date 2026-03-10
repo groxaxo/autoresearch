@@ -34,7 +34,8 @@ pip install -r requirements.txt
 
 # 4. Run a single optimisation iteration (~15 min)
 python run_loop.py
-# RTX 3060 users: GPU_VRAM_GB=12 python run_loop.py
+# RTX 3060 users: GPU_VRAM_GB=12 python run_loop.py  # one-off override
+# or: export GPU_VRAM_GB=12
 
 # 5. Run many iterations unattended
 bash run_many.sh 20   # 20 iterations
@@ -147,7 +148,7 @@ The current loop already proposes, runs, and scores experiments autonomously. To
 |----------|------|--------|
 | NVIDIA RTX 3090 (24 GB) | Qwen 3.5 fine-tuning | ✅ Fully supported |
 | NVIDIA RTX 3060 (12 GB) | Qwen 3.5 fine-tuning | ✅ Supported with conservative batch/sequence settings |
-| NVIDIA RTX 4090 (24 GB) | Qwen 3.5 fine-tuning | ✅ Should work |
+| NVIDIA RTX 4090 (24 GB, Ada) | Qwen 3.5 fine-tuning | ✅ Should work, but Ampere-specific guidance may not be optimal |
 | NVIDIA H100 (80 GB) | From-scratch pretraining | ✅ Fully supported |
 | Other NVIDIA ≤ 24 GB | Qwen 3.5 fine-tuning | ⚠️ Start from the RTX 3060 settings |
 

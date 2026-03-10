@@ -33,14 +33,14 @@ def main():
 
     micro_tokens = cfg["max_seq_length"] * cfg["per_device_train_batch_size"]
     step_tokens = micro_tokens * cfg["gradient_accumulation_steps"]
-    gpu_vram_gb = int(os.environ.get("GPU_VRAM_GB", "0") or "0")
+    target_gpu_vram_gb = int(os.environ.get("GPU_VRAM_GB", "0"))
     gpu_micro_token_limits = {
         12: 2048,
         24: c["max_micro_tokens"],
     }
     max_micro_tokens = c["max_micro_tokens"]
-    if gpu_vram_gb in gpu_micro_token_limits:
-        max_micro_tokens = min(max_micro_tokens, gpu_micro_token_limits[gpu_vram_gb])
+    if target_gpu_vram_gb in gpu_micro_token_limits:
+        max_micro_tokens = min(max_micro_tokens, gpu_micro_token_limits[target_gpu_vram_gb])
 
     assert micro_tokens <= max_micro_tokens, (
         f"OOM risk too high: micro_tokens={micro_tokens}, limit={max_micro_tokens}"
@@ -52,9 +52,9 @@ def main():
     if cfg.get("search_phase", 1) == 1:
         assert cfg["lora"]["target_modules_set"] == "qkv_omlp"
         assert cfg["packing"] is True
-        expected_phase1_seq = 1024 if gpu_vram_gb == 12 else 2048
+        expected_phase1_seq = 1024 if target_gpu_vram_gb == 12 else 2048
         assert cfg["max_seq_length"] == expected_phase1_seq
-        if gpu_vram_gb == 12:
+        if target_gpu_vram_gb == 12:
             assert cfg["per_device_train_batch_size"] == 1
 
     print("OK")
