@@ -63,14 +63,14 @@ def set_nested(cfg, path, value):
     cur[path[-1]] = value
 
 
-def choose_neighbor(value, choices):
+def choose_neighbor(value, choices, rng):
     idx = choices.index(value)
     candidates = [idx]
     if idx > 0:
         candidates.append(idx - 1)
     if idx < len(choices) - 1:
         candidates.append(idx + 1)
-    return choices[random.choice(candidates)]
+    return choices[rng.choice(candidates)]
 
 
 def choose_parent(results, rng):
@@ -110,7 +110,7 @@ def mutate_config(cfg, space, run_idx, rng):
         current = get_nested(cfg, path)
         choices = mapping[path]
         if current in choices:
-            new_value = choose_neighbor(current, choices)
+            new_value = choose_neighbor(current, choices, rng)
         else:
             new_value = rng.choice(choices)
         set_nested(cfg, path, new_value)
