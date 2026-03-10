@@ -1,6 +1,9 @@
 run_name: base_seed
 search_phase: 1
 
+# Ampere baseline: tuned for RTX 3090 first.
+# For RTX 3060, start with batch_size: 1 and max_seq_length: 1024.
+
 model_name: Qwen/Qwen3.5-4B
 output_dir: adapters/base_seed
 

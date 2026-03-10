@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import random
 from pathlib import Path
 
@@ -24,6 +25,10 @@ MUTABLE_PATHS_PHASE2 = MUTABLE_PATHS_PHASE1 + [
 ]
 
 DATASET_MIX_CHOICES = ["default", "reasoning_heavy", "format_heavy"]
+
+
+def get_gpu_vram_gb():
+    return int(os.environ.get("GPU_VRAM_GB", "0") or "0")
 
 
 def load_yaml(path):
@@ -85,7 +90,7 @@ def choose_parent(results, rng):
     return rng.choice(top_k)
 
 
-def mutate_config(cfg, space, run_idx, rng):
+def mutate_config(cfg, space, run_idx, rng, gpu_vram_gb=0):
     cfg = copy.deepcopy(cfg)
     phase_paths = MUTABLE_PATHS_PHASE1 if run_idx <= 20 else MUTABLE_PATHS_PHASE2
     n_mutations = rng.choice([1, 1, 2, 2, 3])
@@ -119,7 +124,9 @@ def mutate_config(cfg, space, run_idx, rng):
         cfg["search_phase"] = 1
         cfg["lora"]["target_modules_set"] = "qkv_omlp"
         cfg["packing"] = True
-        cfg["max_seq_length"] = 2048
+        cfg["max_seq_length"] = 1024 if gpu_vram_gb == 12 else 2048
+        if gpu_vram_gb == 12:
+            cfg["per_device_train_batch_size"] = 1
     else:
         cfg["search_phase"] = 2
 
@@ -128,6 +135,7 @@ def mutate_config(cfg, space, run_idx, rng):
 
 def main():
     rng = random.Random(42)
+    gpu_vram_gb = get_gpu_vram_gb()
 
     base = load_yaml("configs/base.yaml")
     space = load_yaml("search_space.yaml")["search_space"]
@@ -140,7 +148,7 @@ def main():
         cfg = load_yaml(parent["config_path"])
 
     run_idx = len(results) + 1
-    cfg = mutate_config(cfg, space, run_idx, rng)
+    cfg = mutate_config(cfg, space, run_idx, rng, gpu_vram_gb=gpu_vram_gb)
 
     run_name = f"exp_{run_idx:04d}"
     cfg["run_name"] = run_name
