@@ -16,6 +16,9 @@ search_space:
     - mlp_only
 
 constraints:
+  # Ampere defaults:
+  # - RTX 3090 (24 GB): use the full 8192 micro-token budget.
+  # - RTX 3060 (12 GB): run with GPU_VRAM_GB=12 to apply a tighter validator limit.
   max_micro_tokens: 8192
   max_step_tokens: 131072
   max_runtime_minutes: 20

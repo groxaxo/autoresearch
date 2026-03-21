@@ -2,13 +2,13 @@
 
 This is an experiment to have the LLM do its own research.
 
-This project supports **two modes**: from-scratch pretraining (H100) and Qwen 3.5 LoRA fine-tuning (RTX 3090 / low-VRAM GPUs).
+This project supports **two modes**: Ampere-first Qwen 3.5 LoRA fine-tuning (RTX 3090 / RTX 3060) and from-scratch pretraining (H100).
 
 ---
 
-## Mode A — Qwen 3.5 fine-tuning (RTX 3090 / ≤ 24 GB)
+## Mode A — Qwen 3.5 fine-tuning on Ampere (RTX 3090 / RTX 3060)
 
-You are optimizing Qwen3.5-4B with a constrained LoRA SFT loop.
+You are optimizing Qwen3.5-4B with a constrained LoRA SFT loop. The main target hardware is **Ampere**, especially **RTX 3090 (24 GB)** and **RTX 3060 (12 GB)**. Treat these as two distinct operating points: 3090 is the throughput-first profile, while 3060 is the efficiency-first profile.
 
 ### Rules
 
@@ -16,14 +16,16 @@ You are optimizing Qwen3.5-4B with a constrained LoRA SFT loop.
 - Do not modify eval logic, heldout data, tokenizer, scoring weights, or acceptance criteria.
 - Favor stable, incremental mutations over drastic jumps.
 - Prefer experiments that improve composite score, not just train loss.
-- Avoid configs likely to OOM on a single RTX 3090 24 GB.
+- Avoid configs likely to OOM on a single Ampere GPU.
+- If targeting an RTX 3060, prefer `GPU_VRAM_GB=12` and conservative sequence/batch choices.
+- If targeting an RTX 3090, use the default baseline as the throughput-oriented starting point.
 - If the last run diverged, reduce aggressiveness.
 - If format adherence dropped, prioritize prompt/template and dataset-mix corrections.
 - If loss improved but judge score worsened, reduce overfitting pressure.
 
 ### Goal
 
-Maximize composite score under a fixed experiment budget.
+Maximize composite score under a fixed experiment budget, while also learning which mutation patterns work reliably on Ampere GPUs. A good run is not only a better score; it also teaches the loop what kinds of next experiments are worth trying.
 
 ### Allowed levers
 
@@ -43,6 +45,15 @@ Maximize composite score under a fixed experiment budget.
 python run_loop.py          # single iteration
 bash run_many.sh 20         # 20 iterations unattended
 ```
+
+### What "next level" looks like
+
+If you want this to feel like a genuinely self-improving AI system instead of a static search loop, aim for these behaviors:
+
+- **Remember winning patterns**: record which learning-rate, LoRA, and dataset-mix changes repeatedly improve score.
+- **Separate 3060 and 3090 policies**: do not let a memory-safe 3060 policy get overwritten by a more aggressive 3090 policy.
+- **Reflect every few runs**: summarize what changed, what failed, and what hypothesis should be tested next.
+- **Optimize research throughput**: on 3060, smaller stable runs may dominate; on 3090, wider search can pay off.
 
 ---
 

@@ -12,14 +12,14 @@ This repository supports two autonomous-research workflows in a single project:
 
 | Mode | GPU | What happens | Key metric |
 |------|-----|-------------|------------|
+| **Qwen 3.5 LoRA fine-tuning** | **Ampere RTX 3090 (24 GB) / RTX 3060 (12 GB)** | Automated loop fine-tunes Qwen3.5-4B with Unsloth bf16 LoRA | `composite_score` (higher is better) |
 | **From-scratch pretraining** | H100 (80 GB) | Agent edits `train.py`, trains a GPT from scratch for 5 min | `val_bpb` (lower is better) |
-| **Qwen 3.5 LoRA fine-tuning** | RTX 3090 / ≤ 24 GB | Automated loop fine-tunes Qwen3.5-4B with Unsloth bf16 LoRA | `composite_score` (higher is better) |
 
-The **Qwen fine-tuning mode** is designed for users with RTX 3090s or other GPUs with ≤ 24 GB VRAM. It runs Qwen3.5-4B with bf16 LoRA (not 4-bit QLoRA) via Unsloth, using a constrained search loop that automatically proposes, trains, evaluates, and scores configurations.
+The **default focus of this repo is Ampere fine-tuning**, especially **RTX 3090** and **RTX 3060** class GPUs. It runs Qwen3.5-4B with bf16 LoRA (not 4-bit QLoRA) via Unsloth, using a constrained self-improving loop that automatically proposes, trains, evaluates, and scores configurations. The H100 pretraining path is still available, but it is the advanced / high-budget branch of the project rather than the default starting point.
 
 ---
 
-## Quick start — Qwen 3.5 fine-tuning (RTX 3090 / low-VRAM)
+## Quick start — Qwen 3.5 fine-tuning on Ampere (RTX 3090 / RTX 3060)
 
 ```bash
 # 1. Create a virtual environment
@@ -34,6 +34,8 @@ pip install -r requirements.txt
 
 # 4. Run a single optimisation iteration (~15 min)
 python run_loop.py
+# RTX 3060 users: GPU_VRAM_GB=12 python run_loop.py  # one-off override
+# or: export GPU_VRAM_GB=12
 
 # 5. Run many iterations unattended
 bash run_many.sh 20   # 20 iterations
@@ -49,16 +51,19 @@ Each iteration of the loop:
 
 Results are appended to `results.jsonl`.
 
-### RTX 3090 VRAM budget
+### Ampere VRAM guidance
 
-| Component | Approx VRAM |
-|-----------|------------|
-| Qwen3.5-4B bf16 weights | ~8 GB |
-| LoRA adapters + optimizer | ~1–2 GB |
-| Activations (gradient checkpointing) | ~4–8 GB |
-| **Headroom** | **~6–11 GB** |
+| GPU | Good starting point | Notes |
+|-----|---------------------|-------|
+| **RTX 3090 (24 GB)** | `max_seq_length: 2048`, `per_device_train_batch_size: 2`, `gradient_accumulation_steps: 8` | Current default baseline. Enough room to explore larger micro-batches in Phase 2. |
+| **RTX 3060 (12 GB)** | `max_seq_length: 1024`, `per_device_train_batch_size: 1`, `gradient_accumulation_steps: 8-16` | Start conservative and only scale up after observing stable memory use. |
 
-The constraint `max_micro_tokens ≤ 8192` (seq_len × batch_size) keeps peak memory well within 24 GB.
+For the 3090, the constraint `max_micro_tokens ≤ 8192` (seq_len × batch_size) keeps peak memory well within 24 GB. For a 3060, set `GPU_VRAM_GB=12` before running `python run_loop.py` to apply a tighter validator limit **and** a more conservative Phase 1 seed (`max_seq_length: 1024`, `per_device_train_batch_size: 1`).
+
+Ampere-specific rule of thumb:
+
+- **3090**: maximize experiment throughput first; it has enough headroom to explore more aggressive Phase 2 configs.
+- **3060**: maximize iteration count and stability first; more small, clean runs usually beat one memory-edge run.
 
 ---
 
@@ -95,7 +100,7 @@ The `program.md` file is a lightweight "skill" that tells the agent what to do.
 ## Project structure
 
 ```
-# Qwen 3.5 fine-tuning (RTX 3090 / low-VRAM)
+# Qwen 3.5 fine-tuning on Ampere (RTX 3090 / RTX 3060)
 train_qwen35_unsloth.py — Qwen3.5-4B SFT with Unsloth bf16 LoRA
 eval.py                 — generate predictions + judge scoring
 propose_next.py         — propose next config by mutating current best
@@ -127,16 +132,27 @@ pyproject.toml          — project metadata and dependency groups
 - **Self-contained.** One GPU, one metric, no distributed training.
 - **Real judge scoring.** `eval.py` uses token-overlap F1, keyword recall, and length-ratio metrics to score predictions against reference answers. An optional `--use-llm-judge` flag adds model-based rating (blended 60 % token / 40 % LLM).
 
+## Taking the self-improving loop to the next level
+
+The current loop already proposes, runs, and scores experiments autonomously. To push it further on Ampere GPUs, the next gains likely come from improving the **research policy**, not just adding more raw search:
+
+1. **GPU-aware search profiles.** Treat RTX 3060 and RTX 3090 as separate operating regimes and compare ideas within each budget instead of mixing all results together.
+2. **Learning from trajectories, not single runs.** Have the agent track which mutations repeatedly help or hurt composite score, then bias future proposals toward successful patterns.
+3. **Promote stable configs into templates.** When the loop finds a strong region, fork it into a reusable seed config for that GPU tier instead of always mutating from one global baseline.
+4. **Add lightweight memory telemetry.** Persist peak VRAM, tokens/sec, and failure causes so the agent can trade off quality against throughput on 3060 vs 3090.
+5. **Introduce periodic reflection.** Every N runs, ask the agent to summarize what changed, what failed, and what hypothesis should be tested next. That is the simplest path from "search loop" to "self-improving research system."
+
 ## Platform support
 
 | Platform | Mode | Status |
 |----------|------|--------|
-| NVIDIA H100 (80 GB) | From-scratch pretraining | ✅ Fully supported |
 | NVIDIA RTX 3090 (24 GB) | Qwen 3.5 fine-tuning | ✅ Fully supported |
-| NVIDIA RTX 4090 (24 GB) | Qwen 3.5 fine-tuning | ✅ Should work |
-| Other NVIDIA ≤ 24 GB | Qwen 3.5 fine-tuning | ⚠️ May need smaller batch/seq |
+| NVIDIA RTX 3060 (12 GB) | Qwen 3.5 fine-tuning | ✅ Supported with conservative batch/sequence settings |
+| NVIDIA RTX 4090 (24 GB, Ada) | Qwen 3.5 fine-tuning | ✅ Should work, but Ampere-specific guidance may not be optimal |
+| NVIDIA H100 (80 GB) | From-scratch pretraining | ✅ Fully supported |
+| Other NVIDIA ≤ 24 GB | Qwen 3.5 fine-tuning | ⚠️ Start from the RTX 3060 settings |
 
-For even smaller GPUs (< 16 GB), reduce `max_micro_tokens` in `search_space.yaml` and start with `per_device_train_batch_size: 1`, `max_seq_length: 1024`.
+For even smaller GPUs (< 16 GB), start with the RTX 3060 settings, reduce `max_micro_tokens`, and prefer more gradient accumulation over larger micro-batches.
 
 ## Notable forks
 
